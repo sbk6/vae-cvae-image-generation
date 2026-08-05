@@ -1,0 +1,14 @@
+dataset:
+  name: mnist
+  image_size: [28, 28]
+  channels: 1
+  num_classes: 10
+  condition_mode: one_hot
+training:
+  seed: 42
+  batch_size: 128
+  epochs: 30
+  lr: 0.001
+  beta: 1.0
+  device: auto
+  output_dir: reports

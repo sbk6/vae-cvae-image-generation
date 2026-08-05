@@ -1,0 +1,13 @@
+ablation:
+  betas: [0.01, 0.1, 0.5, 1.0, 5.0]
+  seeds: [42, 123]
+training:
+  epochs: 10
+  batch_size: 128
+  lr: 1e-3
+  device: auto
+  output_dir: reports
+model:
+  latent_dim: 16
+  hidden_channels: 32
+  condition_mode: one_hot

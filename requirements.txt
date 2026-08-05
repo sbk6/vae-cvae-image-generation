@@ -1,0 +1,9 @@
+torch
+torchvision
+numpy
+matplotlib
+pyyaml
+scikit-learn
+umap-learn
+tqdm
+pytest
