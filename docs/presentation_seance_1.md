@@ -62,15 +62,46 @@ On peut expliquer par exemple :
 - "Dans `src/training/trainer.py`, on a la boucle qui entraîne le modèle et enregistre les résultats."
 - "Dans `scripts/generate_cvae_grid.py`, on génère la planche finale d'images pour voir si le modèle sait produire la bonne classe."
 
+## 2 ter. Pourquoi cette architecture et pourquoi le YAML
+
+### Pourquoi cette architecture du projet ?
+
+Nous avons organisé le projet en plusieurs dossiers parce que cela permet de séparer les responsabilités et de ne pas tout mélanger dans un seul gros fichier.
+
+- `src/data/` gère les données.
+- `src/models/` gère les modèles.
+- `src/losses/` gère la fonction de perte.
+- `src/training/` gère l'entraînement.
+- `scripts/` gère les petits outils de contrôle.
+- `reports/` garde les résultats.
+
+Cette architecture a été choisie pour trois raisons :
+- **comprendre plus facilement** où est chaque partie du projet,
+- **modifier plus facilement** une partie sans casser les autres,
+- **réutiliser plus facilement** le code sur d'autres datasets, ce qui est important puisque le sujet demande MNIST, Fashion-MNIST et CelebA.
+
+### Pourquoi utiliser des fichiers YAML ?
+
+Le YAML sert à mettre les paramètres du projet dans un fichier séparé du code.
+
+Cela est utile parce que :
+- on peut changer le dataset, la seed, le nombre d'epochs ou le `beta` sans modifier le code,
+- on garde une trace claire de la configuration utilisée pour chaque expérience,
+- on peut comparer plusieurs essais de façon propre,
+- le projet reste plus reproductible.
+
+En séance, on peut dire simplement :
+"Le YAML nous permet de régler le projet sans toucher au code."
+
 ## 3. Répartition du travail dans le groupe
 
 Nous sommes trois, et nous avons choisi une répartition simple, claire et proche de ce que le professeur attend : chaque membre a un rôle principal, mais tout le monde comprend le projet complet et peut challenger le travail des autres.
 
 ### Rôle principal de chaque membre
 
-- **Membre 1 — Données et socle technique** : préparation des données, configuration YAML, structure du projet, lancement des entraînements, contrôle des résultats de base.
-- **Membre 2 — Modèles et apprentissage** : implémentation du VAE, du CVAE et de la perte ELBO, vérification que le modèle apprend correctement.
-- **Membre 3 — Résultats et restitution** : génération des figures, interprétation des pertes, rédaction de la documentation, préparation de la présentation orale.
+- **BIKOZI Sylvain** — données, socle technique et validation de MNIST : préparation des données, configuration YAML, structure du projet, lancement des entraînements, contrôle des résultats de base.
+- **DAVID** — modèles et apprentissage : implémentation du VAE, du CVAE et de la perte ELBO, vérification que le modèle apprend correctement.
+- **Monix** — résultats et restitution : génération des figures, interprétation des pertes, rédaction de la documentation, préparation de la présentation orale.
 
 ### Répartition pratique par dataset
 
@@ -79,6 +110,15 @@ Comme le sujet nous amène à travailler sur trois jeux de données, nous avons 
 - **MNIST** : dataset de départ, déjà utilisé pour valider l'ensemble du pipeline.
 - **Fashion-MNIST** : prochain dataset à brancher pour vérifier que le code reste générique.
 - **CelebA** : troisième dataset prévu pour tester un cas plus complexe et plus riche en conditions.
+
+### Comment on peut le présenter simplement
+
+On peut dire que chacun a un rôle principal, mais que le travail reste collectif :
+- **BIKOZI Sylvain** vérifie que le pipeline de base fonctionne sur MNIST,
+- **DAVID** pousse l'implémentation du modèle et de la fonction de perte,
+- **Monix** s'occupe de la lecture des résultats et de la présentation finale.
+
+Ensuite, chacun challenge le travail des deux autres pour s'assurer que tout est compris et que le code reste générique.
 
 ### Comment on se challenge entre nous
 
