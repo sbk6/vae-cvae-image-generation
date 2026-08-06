@@ -27,12 +27,68 @@ Nous avons réalisé les blocs suivants :
 - génération d'images de contrôle,
 - tests unitaires.
 
+## 2 bis. Où se trouve chaque chose dans le code
+
+Pour pouvoir expliquer le projet simplement en séance, voici la correspondance entre les idées et les fichiers du dépôt.
+
+- `src/training/train.py` : point d'entrée principal pour lancer l'entraînement. Ce fichier lit la configuration YAML, prépare les données, crée le modèle et appelle la boucle d'entraînement.
+- `src/training/trainer.py` : contient la fonction `train()` qui pilote l'entraînement, la validation, la sauvegarde du meilleur modèle et l'écriture du fichier `training_log.csv`.
+- `src/models/vae.py` : contient le modèle VAE. C'est ici que l'image est encodée, transformée en espace latent, puis reconstruite.
+- `src/models/cvae.py` : contient le modèle CVAE. C'est la version conditionnelle, donc le label de classe est ajouté à l'entrée et à la génération.
+- `src/losses/elbo.py` : calcule la perte ELBO, c'est-à-dire reconstruction + KL.
+- `src/data/datasets.py` : charge MNIST et prépare les `DataLoader` pour l'entraînement, la validation et le test.
+- `src/utils/config.py` : lit les fichiers YAML et fusionne les paramètres de configuration avec les arguments de ligne de commande.
+- `src/utils/seed.py` : fixe la graine aléatoire pour rendre les essais reproductibles.
+- `scripts/generate_cvae_grid.py` : lance un court entraînement de contrôle puis génère une grille d'images conditionnées.
+- `scripts/inspect_dataloader.py` : sert à vérifier visuellement que les images du dataset sont bien chargées.
+- `reports/figures/` : contient les figures générées.
+- `reports/training_log.csv` : contient les pertes mesurées à chaque époque.
+- `reports/best_checkpoint.pth` : contient le meilleur modèle sauvegardé.
+
+### Fonctions et rôles importants
+
+- `train()` dans `src/training/trainer.py` : boucle principale d'entraînement.
+- `run_epoch()` dans `src/training/trainer.py` : exécute une époque complète, en mode entraînement ou validation.
+- `VAE.forward()` dans `src/models/vae.py` : prend une image, l'encode, échantillonne dans l'espace latent, puis reconstruit.
+- `CVAE.forward()` dans `src/models/cvae.py` : fait la même chose que le VAE, mais avec la condition de classe.
+- `CVAE.sample()` dans `src/models/cvae.py` : génère de nouvelles images à partir d'une classe demandée.
+
+### Ce qu'on peut dire en présentation
+
+On peut expliquer par exemple :
+
+- "Dans `src/models/vae.py`, on a écrit le VAE qui apprend à compresser puis reconstruire l'image."
+- "Dans `src/models/cvae.py`, on a ajouté la classe en entrée pour contrôler la génération."
+- "Dans `src/training/trainer.py`, on a la boucle qui entraîne le modèle et enregistre les résultats."
+- "Dans `scripts/generate_cvae_grid.py`, on génère la planche finale d'images pour voir si le modèle sait produire la bonne classe."
+
 ## 3. Répartition du travail dans le groupe
 
-Nous sommes trois, et la répartition peut être présentée ainsi :
-- personne 1 : données et configuration,
-- personne 2 : modèles et fonction de perte,
-- personne 3 : tests, résultats, documentation et préparation de la présentation.
+Nous sommes trois, et nous avons choisi une répartition simple, claire et proche de ce que le professeur attend : chaque membre a un rôle principal, mais tout le monde comprend le projet complet et peut challenger le travail des autres.
+
+### Rôle principal de chaque membre
+
+- **Membre 1 — Données et socle technique** : préparation des données, configuration YAML, structure du projet, lancement des entraînements, contrôle des résultats de base.
+- **Membre 2 — Modèles et apprentissage** : implémentation du VAE, du CVAE et de la perte ELBO, vérification que le modèle apprend correctement.
+- **Membre 3 — Résultats et restitution** : génération des figures, interprétation des pertes, rédaction de la documentation, préparation de la présentation orale.
+
+### Répartition pratique par dataset
+
+Comme le sujet nous amène à travailler sur trois jeux de données, nous avons décidé de répartir l'avancement par dataset tout en gardant une logique commune :
+
+- **MNIST** : dataset de départ, déjà utilisé pour valider l'ensemble du pipeline.
+- **Fashion-MNIST** : prochain dataset à brancher pour vérifier que le code reste générique.
+- **CelebA** : troisième dataset prévu pour tester un cas plus complexe et plus riche en conditions.
+
+### Comment on se challenge entre nous
+
+Après chaque partie réalisée, les deux autres membres relisent et challengent le travail :
+- on vérifie si le code fonctionne réellement,
+- on regarde si les résultats sont compréhensibles,
+- on demande si la solution est assez générique pour les autres datasets,
+- on corrige ensemble les erreurs ou les points flous avant d'avancer.
+
+Cette manière de travailler permet d'éviter qu'une seule personne fasse tout sans que les autres comprennent.
 
 ## 4. Résultats déjà visibles
 
@@ -93,4 +149,4 @@ Réponse : la suite du projet dépend maintenant de l'extension aux autres datas
 
 ## 9. Message de synthèse oral possible
 
-"Bonsoir Monsieur, pour notre sujet VAE conditionnel, nous avons d'abord choisi MNIST afin de valider la structure complète du projet. Nous avons mis en place la configuration, le chargement des données, le VAE, le CVAE, la perte ELBO, l'entraînement et les premières visualisations. Nous avons aussi rencontré des difficultés techniques de type import Python, lecture YAML et adaptation du CVAE à la boucle d'entraînement, mais elles ont été résolues. Les prochaines étapes sont l'extension aux autres datasets, l'ablation sur `beta`, la visualisation de l'espace latent et la comparaison finale entre VAE et CVAE."
+"Bonsoir Monsieur, pour notre sujet VAE conditionnel, nous avons d'abord choisi MNIST afin de valider la structure complète du projet. Nous avons mis en place la configuration, le chargement des données, le VAE, le CVAE, la perte ELBO, l'entraînement et les premières visualisations. Nous avons aussi rencontré des difficultés techniques de lecture YAML et adaptation du CVAE à la boucle d'entraînement, mais elles ont été résolues. Les prochaines étapes sont l'extension aux autres datasets, l'ablation sur `beta`, la visualisation de l'espace latent et la comparaison finale entre VAE et CVAE."
