@@ -1,37 +1,49 @@
 """
-Entraînement du VAE sur Fashion-MNIST.
+Entraînement du VAE sur Fashion-MNIST avec suivi MLflow.
 
 Ce script réalise les opérations suivantes :
 
-1. téléchargement ou chargement de Fashion-MNIST ;
-2. séparation des 60 000 images officielles d'entraînement :
+1. charge Fashion-MNIST ;
+2. sépare les 60 000 images officielles d'entraînement :
        - 54 000 images pour l'entraînement ;
        - 6 000 images pour la validation ;
-3. entraînement du VAE ;
-4. évaluation après chaque époque sur la validation ;
-5. sauvegarde du meilleur modèle ;
-6. sauvegarde de l'historique des pertes dans un fichier CSV.
+3. entraîne le VAE ;
+4. mesure les performances sur la validation après chaque époque ;
+5. sauvegarde le meilleur checkpoint ;
+6. sauvegarde l'historique des pertes dans un fichier CSV ;
+7. enregistre les paramètres, métriques et artefacts avec MLflow.
 
-Ce fichier doit être lancé depuis la racine du projet avec :
+Le jeu officiel de test de 10 000 images n'est pas utilisé pendant
+l'entraînement.
 
-    python -m training.train_vae
-
-Exemple pour beta = 1 :
+Exemple :
 
     python -m training.train_vae --beta 1 --epochs 20
+
+Smoke test MLflow :
+
+    python -m training.train_vae \
+        --beta 1 \
+        --epochs 2 \
+        --max-train-batches 2 \
+        --max-val-batches 1 \
+        --run-name vae_mlflow_smoke
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import platform
 import random
+import time
 from pathlib import Path
 from typing import Optional
 
+import mlflow
 import numpy as np
 import torch
-from torch import Tensor, nn
+from torch import nn
 from torch.optim import Adam
 from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader, random_split
@@ -43,54 +55,79 @@ from training.losses import vae_loss
 
 
 # ================================================================
-# CHEMINS DU PROJET
+# CHEMINS DU SOUS-PROJET
 # ================================================================
 
-# __file__ représente le chemin du fichier actuel :
-# D:\projet-cvae\training\train_vae.py
+# Ce fichier se trouve dans :
 #
-# parents[1] permet de remonter à :
-# D:\projet-cvae
+# projects/david_fashion_mnist/training/train_vae.py
+#
+# parents[1] correspond donc à :
+#
+# projects/david_fashion_mnist
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 DATA_DIR = PROJECT_ROOT / "data"
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 HISTORY_DIR = PROJECT_ROOT / "results" / "training_histories"
 
+# MLflow 3.15 n'utilise plus par défaut le FileStore comme backend
+# de tracking.
+#
+# Nous utilisons donc :
+#
+# - SQLite pour les métadonnées, paramètres et métriques ;
+# - un dossier local pour les artefacts.
+MLFLOW_DB_PATH = PROJECT_ROOT / "mlflow.db"
+MLFLOW_ARTIFACT_DIR = PROJECT_ROOT / "mlartifacts"
+
+DEFAULT_MLFLOW_EXPERIMENT = "fashion_mnist_vae_cvae"
+
+
+# ================================================================
+# REPRODUCTIBILITÉ
+# ================================================================
+
 
 def set_random_seed(seed: int) -> None:
     """
-    Fixe les graines aléatoires pour rendre les expériences reproductibles.
+    Fixe les graines aléatoires pour favoriser la reproductibilité.
 
-    Sans graine fixe, la séparation train/validation, l'initialisation
-    des poids et l'ordre des batchs pourraient changer à chaque exécution.
+    La graine contrôle :
+
+    - le module random de Python ;
+    - NumPy ;
+    - PyTorch ;
+    - CUDA lorsqu'il est disponible.
     """
 
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    # Ces instructions sont utiles lorsqu'une carte graphique CUDA
-    # est disponible.
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
-        # Favorise la reproductibilité sur GPU.
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
 
 def select_device(requested_device: str) -> torch.device:
     """
-    Sélectionne l'appareil utilisé pour les calculs.
+    Sélectionne le CPU ou CUDA.
 
     Parameters
     ----------
     requested_device:
-        - "auto" : utilise CUDA si disponible, sinon le CPU ;
-        - "cpu" : force l'utilisation du processeur ;
-        - "cuda" : force l'utilisation d'une carte graphique NVIDIA.
+        "auto"
+            Utilise CUDA lorsqu'il est disponible, sinon le CPU.
+
+        "cpu"
+            Force le CPU.
+
+        "cuda"
+            Force CUDA.
     """
 
     if requested_device == "auto":
@@ -101,11 +138,17 @@ def select_device(requested_device: str) -> torch.device:
 
     if requested_device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError(
-            "CUDA a été demandé, mais aucune version CUDA de PyTorch "
-            "ou aucune carte graphique compatible n'est disponible."
+            "CUDA a été demandé, mais aucune carte graphique "
+            "compatible ou aucune version CUDA de PyTorch "
+            "n'est disponible."
         )
 
     return torch.device(requested_device)
+
+
+# ================================================================
+# DONNÉES
+# ================================================================
 
 
 def create_dataloaders(
@@ -117,49 +160,22 @@ def create_dataloaders(
     """
     Charge Fashion-MNIST et crée les DataLoader train et validation.
 
-    Fashion-MNIST fournit officiellement :
+    Fashion-MNIST contient officiellement :
 
         - 60 000 images d'entraînement ;
         - 10 000 images de test.
 
-    Dans ce script, les 60 000 images sont séparées ainsi :
+    Dans ce script, les 60 000 images officielles d'entraînement sont
+    séparées en :
 
-        - 54 000 images pour l'entraînement ;
-        - 6 000 images pour la validation.
+        - 54 000 images d'entraînement ;
+        - 6 000 images de validation.
 
-    Le jeu officiel de test n'est pas chargé ici, car il sera utilisé
-    uniquement pendant l'évaluation finale.
-
-    Parameters
-    ----------
-    batch_size:
-        Nombre d'images par batch.
-
-    seed:
-        Graine utilisée pour rendre la séparation reproductible.
-
-    num_workers:
-        Nombre de processus utilisés pour charger les données.
-
-        Sous Windows, num_workers=0 est la valeur la plus sûre.
-
-    pin_memory:
-        Accélère certains transferts vers le GPU lorsqu'il est disponible.
-
-    Returns
-    -------
-    train_loader:
-        DataLoader contenant les 54 000 images d'entraînement.
-
-    validation_loader:
-        DataLoader contenant les 6 000 images de validation.
+    Le jeu officiel de test n'est pas chargé ici.
     """
 
-    # ToTensor convertit chaque image en tenseur de forme [1, 28, 28]
-    # et transforme les pixels vers l'intervalle [0, 1].
     transform = transforms.ToTensor()
 
-    # Chargement du jeu officiel d'entraînement.
     full_train_dataset = datasets.FashionMNIST(
         root=str(DATA_DIR),
         train=True,
@@ -170,15 +186,14 @@ def create_dataloaders(
     train_size = 54_000
     validation_size = 6_000
 
-    # Vérification de sécurité.
     if train_size + validation_size != len(full_train_dataset):
         raise RuntimeError(
-            "La taille attendue de Fashion-MNIST est différente de "
-            f"la taille observée : {len(full_train_dataset)}."
+            "La taille attendue de Fashion-MNIST est différente "
+            f"de la taille observée : {len(full_train_dataset)}."
         )
 
-    # Le générateur avec une graine fixe garantit que les mêmes images
-    # seront toujours placées dans train et validation.
+    # Garantit que le split train/validation reste identique
+    # pour une même seed.
     split_generator = torch.Generator().manual_seed(seed)
 
     train_dataset, validation_dataset = random_split(
@@ -187,8 +202,7 @@ def create_dataloaders(
         generator=split_generator,
     )
 
-    # Un deuxième générateur contrôle l'ordre aléatoire des batchs
-    # d'entraînement.
+    # Contrôle également l'ordre des batchs d'entraînement.
     loader_generator = torch.Generator().manual_seed(seed)
 
     train_loader = DataLoader(
@@ -213,6 +227,40 @@ def create_dataloaders(
     return train_loader, validation_loader
 
 
+# ================================================================
+# MÉTRIQUES
+# ================================================================
+
+
+def calculate_average_metrics(
+    total_loss_sum: float,
+    reconstruction_loss_sum: float,
+    kl_loss_sum: float,
+    processed_samples: int,
+) -> dict[str, float]:
+    """
+    Calcule les pertes moyennes par image.
+    """
+
+    if processed_samples <= 0:
+        raise RuntimeError(
+            "Aucune image n'a été traitée pendant cette époque."
+        )
+
+    return {
+        "total": total_loss_sum / processed_samples,
+        "reconstruction": (
+            reconstruction_loss_sum / processed_samples
+        ),
+        "kl": kl_loss_sum / processed_samples,
+    }
+
+
+# ================================================================
+# ENTRAÎNEMENT
+# ================================================================
+
+
 def train_one_epoch(
     model: nn.Module,
     dataloader: DataLoader,
@@ -222,24 +270,18 @@ def train_one_epoch(
     max_batches: Optional[int] = None,
 ) -> dict[str, float]:
     """
-    Entraîne le modèle pendant une époque.
-
-    Une époque correspond normalement à un passage complet sur toutes
-    les images d'entraînement.
-
-    Le paramètre max_batches sert uniquement aux tests rapides.
-    Lors de l'entraînement final, il restera égal à None.
+    Entraîne le VAE pendant une époque.
 
     Returns
     -------
-    Un dictionnaire contenant les moyennes par image :
+    dict[str, float]
+        Contient :
 
         - total ;
         - reconstruction ;
         - kl.
     """
 
-    # Active le mode entraînement.
     model.train()
 
     total_loss_sum = 0.0
@@ -247,26 +289,28 @@ def train_one_epoch(
     kl_loss_sum = 0.0
     processed_samples = 0
 
-    # Lorsque max_batches est fourni, la barre de progression affiche
-    # seulement le nombre de batchs réellement utilisés.
     progress_total = len(dataloader)
 
     if max_batches is not None:
-        progress_total = min(progress_total, max_batches)
+        progress_total = min(
+            progress_total,
+            max_batches,
+        )
 
     progress_bar = tqdm(
         enumerate(dataloader),
         total=progress_total,
-        desc="Entraînement",
+        desc="Entraînement VAE",
         leave=False,
     )
 
     for batch_index, (images, _) in progress_bar:
-        # Arrête la boucle après le nombre de batchs demandé pour le test.
-        if max_batches is not None and batch_index >= max_batches:
+        if (
+            max_batches is not None
+            and batch_index >= max_batches
+        ):
             break
 
-        # Le VAE classique n'utilise pas les labels.
         images = images.to(
             device=device,
             non_blocking=True,
@@ -274,13 +318,12 @@ def train_one_epoch(
 
         batch_size = images.shape[0]
 
-        # Efface les gradients calculés au batch précédent.
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad(
+            set_to_none=True,
+        )
 
-        # Passage des images dans le VAE.
         reconstruction, mu, logvar, _ = model(images)
 
-        # Calcul de la loss ELBO négative.
         total_loss, reconstruction_loss, kl_loss = vae_loss(
             reconstruction=reconstruction,
             target=images,
@@ -289,20 +332,22 @@ def train_one_epoch(
             beta=beta,
         )
 
-        # Calcul des gradients.
         total_loss.backward()
 
-        # Mise à jour des poids du réseau.
         optimizer.step()
 
-        # Les pertes retournées sont des moyennes par image.
-        # On les multiplie par batch_size avant de les additionner,
-        # afin de calculer ensuite une moyenne exacte sur toute l'époque.
-        total_loss_sum += total_loss.item() * batch_size
+        total_loss_sum += (
+            total_loss.item() * batch_size
+        )
+
         reconstruction_loss_sum += (
             reconstruction_loss.item() * batch_size
         )
-        kl_loss_sum += kl_loss.item() * batch_size
+
+        kl_loss_sum += (
+            kl_loss.item() * batch_size
+        )
+
         processed_samples += batch_size
 
         progress_bar.set_postfix(
@@ -319,6 +364,11 @@ def train_one_epoch(
     )
 
 
+# ================================================================
+# VALIDATION
+# ================================================================
+
+
 @torch.no_grad()
 def validate_one_epoch(
     model: nn.Module,
@@ -328,16 +378,14 @@ def validate_one_epoch(
     max_batches: Optional[int] = None,
 ) -> dict[str, float]:
     """
-    Évalue le modèle sur le jeu de validation.
+    Évalue le VAE sur le jeu de validation.
 
-    Contrairement à l'entraînement :
+    Pendant la validation :
 
     - aucun gradient n'est calculé ;
-    - aucun poids n'est modifié ;
-    - les images servent uniquement à mesurer les performances.
+    - aucun poids n'est modifié.
     """
 
-    # Active le mode évaluation.
     model.eval()
 
     total_loss_sum = 0.0
@@ -348,17 +396,23 @@ def validate_one_epoch(
     progress_total = len(dataloader)
 
     if max_batches is not None:
-        progress_total = min(progress_total, max_batches)
+        progress_total = min(
+            progress_total,
+            max_batches,
+        )
 
     progress_bar = tqdm(
         enumerate(dataloader),
         total=progress_total,
-        desc="Validation",
+        desc="Validation VAE",
         leave=False,
     )
 
     for batch_index, (images, _) in progress_bar:
-        if max_batches is not None and batch_index >= max_batches:
+        if (
+            max_batches is not None
+            and batch_index >= max_batches
+        ):
             break
 
         images = images.to(
@@ -378,11 +432,18 @@ def validate_one_epoch(
             beta=beta,
         )
 
-        total_loss_sum += total_loss.item() * batch_size
+        total_loss_sum += (
+            total_loss.item() * batch_size
+        )
+
         reconstruction_loss_sum += (
             reconstruction_loss.item() * batch_size
         )
-        kl_loss_sum += kl_loss.item() * batch_size
+
+        kl_loss_sum += (
+            kl_loss.item() * batch_size
+        )
+
         processed_samples += batch_size
 
     return calculate_average_metrics(
@@ -393,29 +454,9 @@ def validate_one_epoch(
     )
 
 
-def calculate_average_metrics(
-    total_loss_sum: float,
-    reconstruction_loss_sum: float,
-    kl_loss_sum: float,
-    processed_samples: int,
-) -> dict[str, float]:
-    """
-    Calcule les pertes moyennes par image.
-
-    Cette fonction est utilisée à la fois pour l'entraînement
-    et pour la validation.
-    """
-
-    if processed_samples <= 0:
-        raise RuntimeError(
-            "Aucune image n'a été traitée pendant cette époque."
-        )
-
-    return {
-        "total": total_loss_sum / processed_samples,
-        "reconstruction": reconstruction_loss_sum / processed_samples,
-        "kl": kl_loss_sum / processed_samples,
-    }
+# ================================================================
+# CHECKPOINT
+# ================================================================
 
 
 def beta_to_tag(beta: float) -> str:
@@ -424,9 +465,9 @@ def beta_to_tag(beta: float) -> str:
 
     Exemples
     --------
-    0.1 devient "01"
-    1.0 devient "1"
-    4.0 devient "4"
+    0.1 -> "01"
+    1.0 -> "1"
+    4.0 -> "4"
     """
 
     return f"{beta:g}".replace(".", "")
@@ -442,13 +483,13 @@ def save_checkpoint(
     configuration: dict,
 ) -> None:
     """
-    Enregistre le meilleur état du modèle.
-
-    Le checkpoint contient suffisamment d'informations pour reconstruire
-    le modèle et reprendre ou analyser l'expérience.
+    Sauvegarde le meilleur checkpoint du VAE.
     """
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     checkpoint = {
         "model_type": "VAE",
@@ -460,7 +501,15 @@ def save_checkpoint(
         "optimizer_state_dict": optimizer.state_dict(),
     }
 
-    torch.save(checkpoint, path)
+    torch.save(
+        checkpoint,
+        path,
+    )
+
+
+# ================================================================
+# HISTORIQUE CSV
+# ================================================================
 
 
 def save_history_csv(
@@ -468,13 +517,13 @@ def save_history_csv(
     path: Path,
 ) -> None:
     """
-    Enregistre les pertes de chaque époque dans un fichier CSV.
-
-    Ce fichier sera utilisé plus tard pour tracer les courbes
-    d'apprentissage et comparer les différentes valeurs de beta.
+    Sauvegarde les métriques de chaque époque dans un fichier CSV.
     """
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     fieldnames = [
         "epoch",
@@ -500,13 +549,204 @@ def save_history_csv(
         writer.writerows(history)
 
 
+# ================================================================
+# MLFLOW
+# ================================================================
+
+
+def build_default_mlflow_tracking_uri() -> str:
+    """
+    Construit l'URI SQLite locale utilisée par MLflow.
+
+    Sous Windows, on obtient par exemple :
+
+        sqlite:///D:/projet/mlflow.db
+
+    Sous Linux / Colab, on obtiendra par exemple :
+
+        sqlite:////content/projet/mlflow.db
+
+    La même fonction reste donc portable entre Windows et Colab.
+    """
+
+    database_path = (
+        MLFLOW_DB_PATH.resolve().as_posix()
+    )
+
+    return f"sqlite:///{database_path}"
+
+
+def configure_mlflow(
+    tracking_uri: Optional[str],
+    experiment_name: str,
+) -> str:
+    """
+    Configure le backend de suivi MLflow.
+
+    Cas 1
+    -----
+    Aucun tracking URI n'est fourni.
+
+    Le projet utilise alors :
+
+        SQLite :
+            mlflow.db
+
+        Artefacts :
+            mlartifacts/
+
+    Cas 2
+    -----
+    Un tracking URI est explicitement fourni dans le terminal.
+
+    MLflow utilise directement cet URI.
+
+    Cette possibilité sera notamment utile si l'on décide plus tard
+    d'utiliser un serveur MLflow ou un environnement Colab.
+    """
+
+    if tracking_uri is None:
+        resolved_tracking_uri = (
+            build_default_mlflow_tracking_uri()
+        )
+
+        MLFLOW_ARTIFACT_DIR.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        mlflow.set_tracking_uri(
+            resolved_tracking_uri
+        )
+
+        # Vérifie si l'expérience existe déjà dans la base SQLite.
+        experiment = mlflow.get_experiment_by_name(
+            experiment_name
+        )
+
+        # Lors de la toute première exécution, on crée l'expérience
+        # et on précise où ses artefacts doivent être sauvegardés.
+        if experiment is None:
+            mlflow.create_experiment(
+                name=experiment_name,
+                artifact_location=(
+                    MLFLOW_ARTIFACT_DIR.resolve().as_uri()
+                ),
+            )
+
+        mlflow.set_experiment(
+            experiment_name
+        )
+
+    else:
+        resolved_tracking_uri = tracking_uri
+
+        mlflow.set_tracking_uri(
+            resolved_tracking_uri
+        )
+
+        # Avec un serveur ou un backend externe, sa configuration
+        # détermine l'emplacement des artefacts.
+        mlflow.set_experiment(
+            experiment_name
+        )
+
+    return resolved_tracking_uri
+
+
+def log_mlflow_parameters(
+    args: argparse.Namespace,
+    device: torch.device,
+    is_smoke_test: bool,
+) -> None:
+    """
+    Enregistre les hyperparamètres et informations principales.
+    """
+
+    parameters = {
+        "dataset": "Fashion-MNIST",
+        "model_type": "VAE",
+        "beta": args.beta,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "latent_dim": args.latent_dim,
+        "hidden_dim": args.hidden_dim,
+        "learning_rate": args.learning_rate,
+        "seed": args.seed,
+        "num_workers": args.num_workers,
+        "device": str(device),
+        "smoke_test": is_smoke_test,
+        "max_train_batches": (
+            args.max_train_batches
+            if args.max_train_batches is not None
+            else "None"
+        ),
+        "max_val_batches": (
+            args.max_val_batches
+            if args.max_val_batches is not None
+            else "None"
+        ),
+    }
+
+    mlflow.log_params(
+        parameters
+    )
+
+    mlflow.set_tags(
+        {
+            "dataset": "Fashion-MNIST",
+            "model_type": "VAE",
+            "python_version": platform.python_version(),
+            "torch_version": torch.__version__,
+            "mlflow_version": mlflow.__version__,
+        }
+    )
+
+
+def log_epoch_to_mlflow(
+    epoch: int,
+    train_metrics: dict[str, float],
+    validation_metrics: dict[str, float],
+) -> None:
+    """
+    Enregistre les six métriques principales d'une époque.
+    """
+
+    mlflow.log_metrics(
+        {
+            "train_total": train_metrics["total"],
+            "train_reconstruction": (
+                train_metrics["reconstruction"]
+            ),
+            "train_kl": train_metrics["kl"],
+            "validation_total": (
+                validation_metrics["total"]
+            ),
+            "validation_reconstruction": (
+                validation_metrics["reconstruction"]
+            ),
+            "validation_kl": (
+                validation_metrics["kl"]
+            ),
+        },
+        step=epoch,
+    )
+
+
+# ================================================================
+# ARGUMENTS
+# ================================================================
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     """
-    Définit les options disponibles dans le terminal.
+    Définit les arguments utilisables dans le terminal.
     """
 
     parser = argparse.ArgumentParser(
-        description="Entraîner un VAE sur Fashion-MNIST."
+        description=(
+            "Entraîner un VAE sur Fashion-MNIST avec MLflow."
+        )
     )
 
     parser.add_argument(
@@ -520,7 +760,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--epochs",
         type=int,
         default=20,
-        help="Nombre d'époques. Valeur par défaut : 20.",
+        help=(
+            "Nombre d'époques. "
+            "Valeur par défaut actuelle : 20."
+        ),
     )
 
     parser.add_argument(
@@ -541,7 +784,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--hidden-dim",
         type=int,
         default=256,
-        help="Taille de la couche cachée. Valeur par défaut : 256.",
+        help="Dimension cachée. Valeur par défaut : 256.",
     )
 
     parser.add_argument(
@@ -564,7 +807,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=0,
         help=(
             "Nombre de processus de chargement. "
-            "Sous Windows, conserver 0 au début."
+            "Sous Windows, conserver 0."
         ),
     )
 
@@ -579,46 +822,78 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--run-name",
         type=str,
         default=None,
-        help="Nom personnalisé de l'expérience.",
+        help="Nom personnalisé du run MLflow.",
     )
 
-    # Ces deux paramètres servent uniquement à réaliser un test rapide.
+    parser.add_argument(
+        "--mlflow-experiment-name",
+        type=str,
+        default=DEFAULT_MLFLOW_EXPERIMENT,
+        help=(
+            "Nom de l'expérience MLflow. "
+            f"Par défaut : {DEFAULT_MLFLOW_EXPERIMENT}."
+        ),
+    )
+
+    parser.add_argument(
+        "--mlflow-tracking-uri",
+        type=str,
+        default=None,
+        help=(
+            "URI MLflow optionnel. "
+            "Sans valeur, SQLite local est utilisé."
+        ),
+    )
+
+    # Utilisés uniquement pour les smoke tests.
     parser.add_argument(
         "--max-train-batches",
         type=int,
         default=None,
-        help="Limite temporaire du nombre de batchs d'entraînement.",
+        help="Limite temporaire des batchs d'entraînement.",
     )
 
     parser.add_argument(
         "--max-val-batches",
         type=int,
         default=None,
-        help="Limite temporaire du nombre de batchs de validation.",
+        help="Limite temporaire des batchs de validation.",
     )
 
     return parser
 
 
-def validate_arguments(args: argparse.Namespace) -> None:
+def validate_arguments(
+    args: argparse.Namespace,
+) -> None:
     """
-    Vérifie les arguments fournis dans le terminal.
+    Vérifie les paramètres fournis dans le terminal.
     """
 
     if args.beta < 0:
-        raise ValueError("beta doit être supérieur ou égal à zéro.")
+        raise ValueError(
+            "beta doit être supérieur ou égal à zéro."
+        )
 
     if args.epochs <= 0:
-        raise ValueError("epochs doit être strictement positif.")
+        raise ValueError(
+            "epochs doit être strictement positif."
+        )
 
     if args.batch_size <= 0:
-        raise ValueError("batch-size doit être strictement positif.")
+        raise ValueError(
+            "batch-size doit être strictement positif."
+        )
 
     if args.latent_dim <= 0:
-        raise ValueError("latent-dim doit être strictement positif.")
+        raise ValueError(
+            "latent-dim doit être strictement positif."
+        )
 
     if args.hidden_dim <= 0:
-        raise ValueError("hidden-dim doit être strictement positif.")
+        raise ValueError(
+            "hidden-dim doit être strictement positif."
+        )
 
     if args.learning_rate <= 0:
         raise ValueError(
@@ -626,7 +901,14 @@ def validate_arguments(args: argparse.Namespace) -> None:
         )
 
     if args.num_workers < 0:
-        raise ValueError("num-workers ne peut pas être négatif.")
+        raise ValueError(
+            "num-workers ne peut pas être négatif."
+        )
+
+    if not args.mlflow_experiment_name.strip():
+        raise ValueError(
+            "mlflow-experiment-name ne peut pas être vide."
+        )
 
     if (
         args.max_train_batches is not None
@@ -645,19 +927,32 @@ def validate_arguments(args: argparse.Namespace) -> None:
         )
 
 
+# ================================================================
+# PROGRAMME PRINCIPAL
+# ================================================================
+
+
 def main() -> None:
     """
-    Point d'entrée principal du script d'entraînement.
+    Point d'entrée principal de l'entraînement du VAE.
     """
 
     parser = build_argument_parser()
     args = parser.parse_args()
 
     validate_arguments(args)
-    set_random_seed(args.seed)
 
-    device = select_device(args.device)
-    pin_memory = device.type == "cuda"
+    set_random_seed(
+        args.seed
+    )
+
+    device = select_device(
+        args.device
+    )
+
+    pin_memory = (
+        device.type == "cuda"
+    )
 
     train_loader, validation_loader = create_dataloaders(
         batch_size=args.batch_size,
@@ -666,20 +961,16 @@ def main() -> None:
         pin_memory=pin_memory,
     )
 
-    # Création du VAE.
     model = VAE(
         latent_dim=args.latent_dim,
         hidden_dim=args.hidden_dim,
     ).to(device)
 
-    # Adam est un optimiseur très utilisé pour les VAE.
     optimizer = Adam(
         model.parameters(),
         lr=args.learning_rate,
     )
 
-    # Une expérience limitée en nombre de batchs est considérée
-    # comme un test rapide, et non comme un entraînement final.
     is_smoke_test = (
         args.max_train_batches is not None
         or args.max_val_batches is not None
@@ -687,14 +978,24 @@ def main() -> None:
 
     if args.run_name is not None:
         run_name = args.run_name
+
     else:
-        run_name = f"vae_beta_{beta_to_tag(args.beta)}"
+        run_name = (
+            f"vae_beta_{beta_to_tag(args.beta)}"
+        )
 
         if is_smoke_test:
             run_name += "_smoke"
 
-    checkpoint_path = CHECKPOINT_DIR / f"{run_name}.pt"
-    history_path = HISTORY_DIR / f"{run_name}_history.csv"
+    checkpoint_path = (
+        CHECKPOINT_DIR
+        / f"{run_name}.pt"
+    )
+
+    history_path = (
+        HISTORY_DIR
+        / f"{run_name}_history.csv"
+    )
 
     configuration = {
         "dataset": "Fashion-MNIST",
@@ -709,9 +1010,15 @@ def main() -> None:
         "device": str(device),
     }
 
-    print("=" * 65)
-    print("ENTRAÎNEMENT DU VAE SUR FASHION-MNIST")
-    print("=" * 65)
+    # Configure SQLite / serveur MLflow avant de créer le run.
+    tracking_uri = configure_mlflow(
+        tracking_uri=args.mlflow_tracking_uri,
+        experiment_name=args.mlflow_experiment_name,
+    )
+
+    print("=" * 72)
+    print("ENTRAÎNEMENT DU VAE SUR FASHION-MNIST + MLFLOW")
+    print("=" * 72)
     print(f"Appareil utilisé            : {device}")
     print(f"Images d'entraînement       : {len(train_loader.dataset)}")
     print(f"Images de validation        : {len(validation_loader.dataset)}")
@@ -720,94 +1027,224 @@ def main() -> None:
     print(f"Beta                        : {args.beta}")
     print(f"Nombre d'époques            : {args.epochs}")
     print(f"Taux d'apprentissage        : {args.learning_rate}")
-    print(f"Nom de l'expérience         : {run_name}")
+    print(f"Nom du run MLflow           : {run_name}")
+    print(f"Expérience MLflow           : {args.mlflow_experiment_name}")
+    print(f"Tracking URI MLflow         : {tracking_uri}")
+
+    if args.mlflow_tracking_uri is None:
+        print(f"Base SQLite MLflow          : {MLFLOW_DB_PATH}")
+        print(f"Artefacts MLflow            : {MLFLOW_ARTIFACT_DIR}")
 
     if is_smoke_test:
         print("Mode                        : TEST RAPIDE")
 
-    print("=" * 65)
+    print("=" * 72)
 
     history: list[dict[str, float]] = []
+
     best_validation_loss = float("inf")
     best_epoch = 0
 
-    for epoch in range(1, args.epochs + 1):
-        train_metrics = train_one_epoch(
-            model=model,
-            dataloader=train_loader,
-            optimizer=optimizer,
-            device=device,
-            beta=args.beta,
-            max_batches=args.max_train_batches,
-        )
+    training_start_time = time.perf_counter()
 
-        validation_metrics = validate_one_epoch(
-            model=model,
-            dataloader=validation_loader,
-            device=device,
-            beta=args.beta,
-            max_batches=args.max_val_batches,
-        )
-
-        history_row = {
-            "epoch": epoch,
-            "train_total": train_metrics["total"],
-            "train_reconstruction": train_metrics["reconstruction"],
-            "train_kl": train_metrics["kl"],
-            "validation_total": validation_metrics["total"],
-            "validation_reconstruction": (
-                validation_metrics["reconstruction"]
-            ),
-            "validation_kl": validation_metrics["kl"],
-        }
-
-        history.append(history_row)
+    # Une exécution du script correspond à un run MLflow.
+    with mlflow.start_run(
+        run_name=run_name,
+    ) as active_run:
 
         print(
-            f"Époque {epoch:02d}/{args.epochs:02d} | "
-            f"Train total={train_metrics['total']:.4f} | "
-            f"Train recon={train_metrics['reconstruction']:.4f} | "
-            f"Train KL={train_metrics['kl']:.4f} | "
-            f"Val total={validation_metrics['total']:.4f} | "
-            f"Val recon={validation_metrics['reconstruction']:.4f} | "
-            f"Val KL={validation_metrics['kl']:.4f}"
+            f"MLflow run ID               : "
+            f"{active_run.info.run_id}"
+        )
+        print("=" * 72)
+
+        log_mlflow_parameters(
+            args=args,
+            device=device,
+            is_smoke_test=is_smoke_test,
         )
 
-        # Le meilleur modèle est celui qui possède la plus petite
-        # loss totale de validation.
-        if validation_metrics["total"] < best_validation_loss:
-            best_validation_loss = validation_metrics["total"]
-            best_epoch = epoch
-
-            save_checkpoint(
-                path=checkpoint_path,
+        for epoch in range(
+            1,
+            args.epochs + 1,
+        ):
+            train_metrics = train_one_epoch(
                 model=model,
+                dataloader=train_loader,
                 optimizer=optimizer,
-                epoch=epoch,
+                device=device,
                 beta=args.beta,
-                best_validation_loss=best_validation_loss,
-                configuration=configuration,
+                max_batches=args.max_train_batches,
+            )
+
+            validation_metrics = validate_one_epoch(
+                model=model,
+                dataloader=validation_loader,
+                device=device,
+                beta=args.beta,
+                max_batches=args.max_val_batches,
+            )
+
+            history_row = {
+                "epoch": epoch,
+                "train_total": (
+                    train_metrics["total"]
+                ),
+                "train_reconstruction": (
+                    train_metrics["reconstruction"]
+                ),
+                "train_kl": (
+                    train_metrics["kl"]
+                ),
+                "validation_total": (
+                    validation_metrics["total"]
+                ),
+                "validation_reconstruction": (
+                    validation_metrics["reconstruction"]
+                ),
+                "validation_kl": (
+                    validation_metrics["kl"]
+                ),
+            }
+
+            history.append(
+                history_row
             )
 
             print(
-                f"  -> Nouveau meilleur modèle sauvegardé "
-                f"à l'époque {epoch}."
+                f"Époque {epoch:02d}/{args.epochs:02d} | "
+                f"Train total={train_metrics['total']:.4f} | "
+                f"Train recon="
+                f"{train_metrics['reconstruction']:.4f} | "
+                f"Train KL={train_metrics['kl']:.4f} | "
+                f"Val total="
+                f"{validation_metrics['total']:.4f} | "
+                f"Val recon="
+                f"{validation_metrics['reconstruction']:.4f} | "
+                f"Val KL="
+                f"{validation_metrics['kl']:.4f}"
             )
 
-        # L'historique est sauvegardé après chaque époque.
-        # En cas d'interruption, les résultats déjà obtenus sont conservés.
-        save_history_csv(
-            history=history,
-            path=history_path,
+            # Enregistre les courbes train/validation dans MLflow.
+            log_epoch_to_mlflow(
+                epoch=epoch,
+                train_metrics=train_metrics,
+                validation_metrics=validation_metrics,
+            )
+
+            # Sauvegarde du meilleur checkpoint.
+            if (
+                validation_metrics["total"]
+                < best_validation_loss
+            ):
+                best_validation_loss = (
+                    validation_metrics["total"]
+                )
+
+                best_epoch = epoch
+
+                save_checkpoint(
+                    path=checkpoint_path,
+                    model=model,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    beta=args.beta,
+                    best_validation_loss=(
+                        best_validation_loss
+                    ),
+                    configuration=configuration,
+                )
+
+                print(
+                    "  -> Nouveau meilleur modèle "
+                    f"sauvegardé à l'époque {epoch}."
+                )
+
+            # Sauvegarde locale de l'historique après chaque époque.
+            save_history_csv(
+                history=history,
+                path=history_path,
+            )
+
+        training_duration_seconds = (
+            time.perf_counter()
+            - training_start_time
         )
 
-    print("=" * 65)
-    print("ENTRAÎNEMENT TERMINÉ")
-    print(f"Meilleure époque            : {best_epoch}")
-    print(f"Meilleure loss validation   : {best_validation_loss:.4f}")
-    print(f"Checkpoint                  : {checkpoint_path}")
-    print(f"Historique CSV              : {history_path}")
-    print("=" * 65)
+        # Métriques finales du run.
+        mlflow.log_metrics(
+            {
+                "best_epoch": float(best_epoch),
+                "best_validation_loss": (
+                    best_validation_loss
+                ),
+                "epochs_completed": float(
+                    len(history)
+                ),
+                "training_duration_seconds": (
+                    training_duration_seconds
+                ),
+            }
+        )
+
+        # Sauvegarde des fichiers importants comme artefacts MLflow.
+        if checkpoint_path.exists():
+            mlflow.log_artifact(
+                str(checkpoint_path),
+                artifact_path="checkpoints",
+            )
+
+        if history_path.exists():
+            mlflow.log_artifact(
+                str(history_path),
+                artifact_path="training_histories",
+            )
+
+        mlflow.set_tag(
+            "best_checkpoint",
+            checkpoint_path.name,
+        )
+
+        mlflow.set_tag(
+            "run_status",
+            (
+                "smoke_test"
+                if is_smoke_test
+                else "training"
+            ),
+        )
+
+        print("=" * 72)
+        print("ENTRAÎNEMENT TERMINÉ")
+        print("=" * 72)
+        print(
+            f"MLflow run ID               : "
+            f"{active_run.info.run_id}"
+        )
+        print(f"Meilleure époque            : {best_epoch}")
+        print(
+            "Meilleure loss validation   : "
+            f"{best_validation_loss:.4f}"
+        )
+        print(
+            "Durée d'entraînement        : "
+            f"{training_duration_seconds:.2f} secondes"
+        )
+        print(f"Checkpoint                  : {checkpoint_path}")
+        print(f"Historique CSV              : {history_path}")
+        print(f"MLflow tracking URI         : {tracking_uri}")
+
+        if args.mlflow_tracking_uri is None:
+            print(
+                f"Base SQLite MLflow          : "
+                f"{MLFLOW_DB_PATH}"
+            )
+            print(
+                f"Artefacts MLflow            : "
+                f"{MLFLOW_ARTIFACT_DIR}"
+            )
+
+        print("=" * 72)
 
 
 if __name__ == "__main__":

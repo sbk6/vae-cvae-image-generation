@@ -45,8 +45,17 @@ checkpoints/
 # MLFLOW
 # ================================================================
 
+# Ancien stockage FileStore éventuel.
 mlruns/
+
+# Artefacts MLflow locaux.
 mlartifacts/
+
+# Backend SQLite utilisé par MLflow.
+mlflow.db
+mlflow.db-shm
+mlflow.db-wal
+mlflow.db-journal
 
 
 # ================================================================
