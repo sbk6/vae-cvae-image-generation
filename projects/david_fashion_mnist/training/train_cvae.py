@@ -1,5 +1,5 @@
 """
-Entraînement du CVAE sur Fashion-MNIST avec suivi MLflow.
+Entraînement du CVAE sur Fashion-MNIST avec MLflow et early stopping.
 
 Le CVAE est un VAE conditionnel. Il reçoit :
 
@@ -28,25 +28,35 @@ Ce script réalise :
 3. l'entraînement du CVAE ;
 4. la validation après chaque époque ;
 5. la sauvegarde du meilleur checkpoint ;
-6. la sauvegarde de l'historique CSV ;
-7. l'enregistrement des paramètres, métriques et artefacts
+6. l'early stopping basé sur la loss totale de validation ;
+7. la sauvegarde de l'historique CSV ;
+8. l'enregistrement des paramètres, métriques et artefacts
    avec MLflow.
 
 Le jeu officiel de test de 10 000 images n'est pas utilisé
 pendant l'entraînement.
 
+Configuration finale prévue :
+
+    max_epochs = 100
+    patience   = 10
+    min_delta  = 0.0
+
 Exemple :
 
-    python -m training.train_cvae --beta 1 --epochs 20
+    python -m training.train_cvae --beta 1
 
-Smoke test :
+Exemple explicite :
 
     python -m training.train_cvae \
         --beta 1 \
-        --epochs 2 \
-        --max-train-batches 2 \
-        --max-val-batches 1 \
-        --run-name cvae_mlflow_smoke
+        --max-epochs 100 \
+        --patience 10 \
+        --min-delta 0
+
+L'ancien argument --epochs reste accepté pour compatibilité :
+
+    python -m training.train_cvae --beta 1 --epochs 100
 """
 
 from __future__ import annotations
@@ -95,11 +105,6 @@ from training.train_vae import (
 # CHEMINS DU SOUS-PROJET
 # ================================================================
 
-# Ce fichier se trouve dans :
-#
-# projects/david_fashion_mnist/training/train_cvae.py
-#
-# parents[1] correspond donc au sous-projet Fashion-MNIST.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
@@ -112,7 +117,7 @@ HISTORY_DIR = (
 
 
 # ================================================================
-# ENTRAÎNEMENT
+# ENTRAÎNEMENT D'UNE ÉPOQUE
 # ================================================================
 
 
@@ -127,32 +132,12 @@ def train_one_epoch(
     """
     Entraîne le CVAE pendant une époque.
 
-    Contrairement au VAE classique, le CVAE reçoit à la fois :
+    Contrairement au VAE classique, le CVAE reçoit :
 
         - les images ;
         - les labels.
 
-    Parameters
-    ----------
-    model:
-        Modèle CVAE.
-
-    dataloader:
-        DataLoader d'entraînement.
-
-    optimizer:
-        Optimiseur PyTorch.
-
-    device:
-        CPU ou CUDA.
-
-    beta:
-        Poids appliqué au terme KL.
-
-    max_batches:
-        Nombre maximum optionnel de batchs.
-
-        Cette option sert uniquement aux smoke tests.
+    max_batches est utilisé uniquement pour les smoke tests.
 
     Returns
     -------
@@ -217,10 +202,10 @@ def train_one_epoch(
             labels,
         )
 
-        # La fonction de perte reste la même que pour le VAE.
+        # La fonction de perte est la même que pour le VAE.
         #
-        # Le conditionnement est réalisé dans l'architecture du CVAE,
-        # pas directement dans la loss.
+        # Le conditionnement est réalisé dans l'architecture
+        # du CVAE, pas directement dans la loss.
         total_loss, reconstruction_loss, kl_loss = vae_loss(
             reconstruction=reconstruction,
             target=images,
@@ -267,7 +252,7 @@ def train_one_epoch(
 
 
 # ================================================================
-# VALIDATION
+# VALIDATION D'UNE ÉPOQUE
 # ================================================================
 
 
@@ -428,7 +413,7 @@ def save_checkpoint(
 
 
 # ================================================================
-# MLFLOW
+# MLFLOW : PARAMÈTRES
 # ================================================================
 
 
@@ -445,7 +430,10 @@ def log_mlflow_parameters(
         "dataset": "Fashion-MNIST",
         "model_type": "CVAE",
         "beta": args.beta,
-        "epochs": args.epochs,
+
+        # Nombre maximal d'époques.
+        "max_epochs": args.max_epochs,
+
         "batch_size": args.batch_size,
         "latent_dim": args.latent_dim,
         "hidden_dim": args.hidden_dim,
@@ -454,12 +442,21 @@ def log_mlflow_parameters(
         "seed": args.seed,
         "num_workers": args.num_workers,
         "device": str(device),
+
+        # Paramètres de l'early stopping.
+        "early_stopping": True,
+        "patience": args.patience,
+        "min_delta": args.min_delta,
+        "early_stopping_monitor": "validation_total",
+
         "smoke_test": is_smoke_test,
+
         "max_train_batches": (
             args.max_train_batches
             if args.max_train_batches is not None
             else "None"
         ),
+
         "max_val_batches": (
             args.max_val_batches
             if args.max_val_batches is not None
@@ -471,8 +468,6 @@ def log_mlflow_parameters(
         parameters
     )
 
-    # Les tags sont utiles pour filtrer rapidement les runs
-    # dans l'interface MLflow.
     mlflow.set_tags(
         {
             "dataset": "Fashion-MNIST",
@@ -490,13 +485,23 @@ def log_mlflow_parameters(
     )
 
 
+# ================================================================
+# MLFLOW : MÉTRIQUES PAR ÉPOQUE
+# ================================================================
+
+
 def log_epoch_to_mlflow(
     epoch: int,
     train_metrics: dict[str, float],
     validation_metrics: dict[str, float],
+    best_validation_loss: float,
+    epochs_without_improvement: int,
+    is_improvement: bool,
 ) -> None:
     """
-    Enregistre dans MLflow les métriques d'une époque.
+    Enregistre les métriques d'une époque dans MLflow.
+
+    En plus des losses, on suit l'état de l'early stopping.
     """
 
     mlflow.log_metrics(
@@ -504,20 +509,39 @@ def log_epoch_to_mlflow(
             "train_total": (
                 train_metrics["total"]
             ),
+
             "train_reconstruction": (
                 train_metrics["reconstruction"]
             ),
+
             "train_kl": (
                 train_metrics["kl"]
             ),
+
             "validation_total": (
                 validation_metrics["total"]
             ),
+
             "validation_reconstruction": (
                 validation_metrics["reconstruction"]
             ),
+
             "validation_kl": (
                 validation_metrics["kl"]
+            ),
+
+            "best_validation_loss_so_far": (
+                best_validation_loss
+            ),
+
+            "epochs_without_improvement": float(
+                epochs_without_improvement
+            ),
+
+            "is_improvement": (
+                1.0
+                if is_improvement
+                else 0.0
             ),
         },
         step=epoch,
@@ -531,12 +555,13 @@ def log_epoch_to_mlflow(
 
 def build_argument_parser() -> argparse.ArgumentParser:
     """
-    Définit les arguments du script.
+    Définit les arguments utilisables dans le terminal.
     """
 
     parser = argparse.ArgumentParser(
         description=(
-            "Entraîner un CVAE sur Fashion-MNIST avec MLflow."
+            "Entraîner un CVAE sur Fashion-MNIST "
+            "avec MLflow et early stopping."
         )
     )
 
@@ -550,13 +575,38 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # --epochs reste accepté pour assurer la compatibilité
+    # avec les anciennes commandes du projet.
     parser.add_argument(
+        "--max-epochs",
         "--epochs",
+        dest="max_epochs",
         type=int,
-        default=20,
+        default=100,
         help=(
-            "Nombre d'époques. "
-            "Valeur par défaut actuelle : 20."
+            "Nombre maximal d'époques. "
+            "Valeur par défaut : 100. "
+            "--epochs reste accepté comme alias."
+        ),
+    )
+
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=10,
+        help=(
+            "Nombre d'époques consécutives sans amélioration "
+            "avant l'arrêt. Valeur par défaut : 10."
+        ),
+    )
+
+    parser.add_argument(
+        "--min-delta",
+        type=float,
+        default=0.0,
+        help=(
+            "Amélioration minimale exigée de la loss de validation. "
+            "Valeur par défaut : 0.0."
         ),
     )
 
@@ -674,7 +724,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    # Ces deux arguments sont réservés aux tests rapides.
+    # Réservés aux smoke tests.
     parser.add_argument(
         "--max-train-batches",
         type=int,
@@ -698,6 +748,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# ================================================================
+# VALIDATION DES ARGUMENTS
+# ================================================================
+
+
 def validate_arguments(
     args: argparse.Namespace,
 ) -> None:
@@ -711,10 +766,22 @@ def validate_arguments(
             "ou égal à zéro."
         )
 
-    if args.epochs <= 0:
+    if args.max_epochs <= 0:
         raise ValueError(
-            "epochs doit être "
+            "max-epochs doit être "
             "strictement positif."
+        )
+
+    if args.patience <= 0:
+        raise ValueError(
+            "patience doit être "
+            "strictement positive."
+        )
+
+    if args.min_delta < 0:
+        raise ValueError(
+            "min-delta doit être "
+            "supérieur ou égal à zéro."
         )
 
     if args.batch_size <= 0:
@@ -815,8 +882,7 @@ def main() -> None:
         device.type == "cuda"
     )
 
-    # Utilise exactement la même séparation train / validation
-    # que le script VAE.
+    # Même séparation train / validation que le VAE.
     train_loader, validation_loader = create_dataloaders(
         batch_size=args.batch_size,
         seed=args.seed,
@@ -836,7 +902,7 @@ def main() -> None:
         lr=args.learning_rate,
     )
 
-    # Un run limité en batchs est considéré comme un smoke test.
+    # Une limitation en batchs indique un smoke test.
     is_smoke_test = (
         args.max_train_batches is not None
         or args.max_val_batches is not None
@@ -844,9 +910,11 @@ def main() -> None:
 
     # Construction du nom du run.
     if args.run_name is not None:
+
         run_name = args.run_name
 
     else:
+
         run_name = (
             f"cvae_beta_{beta_to_tag(args.beta)}"
         )
@@ -865,10 +933,19 @@ def main() -> None:
     )
 
     # Configuration sauvegardée dans le checkpoint.
+    #
+    # "epochs" reste présent pour garder la compatibilité avec
+    # les anciens scripts qui pourraient lire cette clé.
     configuration = {
         "dataset": "Fashion-MNIST",
         "beta": args.beta,
-        "epochs": args.epochs,
+
+        "epochs": args.max_epochs,
+        "max_epochs": args.max_epochs,
+
+        "patience": args.patience,
+        "min_delta": args.min_delta,
+
         "batch_size": args.batch_size,
         "latent_dim": args.latent_dim,
         "hidden_dim": args.hidden_dim,
@@ -879,8 +956,7 @@ def main() -> None:
         "device": str(device),
     }
 
-    # Réutilise exactement le même backend MLflow SQLite
-    # que le VAE.
+    # Réutilise le même backend MLflow SQLite que le VAE.
     tracking_uri = configure_mlflow(
         tracking_uri=(
             args.mlflow_tracking_uri
@@ -890,12 +966,12 @@ def main() -> None:
         ),
     )
 
-    print("=" * 72)
+    print("=" * 74)
     print(
-        "ENTRAÎNEMENT DU CVAE "
-        "SUR FASHION-MNIST + MLFLOW"
+        "ENTRAÎNEMENT DU CVAE SUR "
+        "FASHION-MNIST + MLFLOW + EARLY STOPPING"
     )
-    print("=" * 72)
+    print("=" * 74)
 
     print(
         f"Appareil utilisé            : "
@@ -933,8 +1009,18 @@ def main() -> None:
     )
 
     print(
-        f"Nombre d'époques            : "
-        f"{args.epochs}"
+        f"Nombre maximal d'époques    : "
+        f"{args.max_epochs}"
+    )
+
+    print(
+        f"Patience                    : "
+        f"{args.patience}"
+    )
+
+    print(
+        f"Min delta                   : "
+        f"{args.min_delta}"
     )
 
     print(
@@ -958,6 +1044,7 @@ def main() -> None:
     )
 
     if args.mlflow_tracking_uri is None:
+
         print(
             f"Base SQLite MLflow          : "
             f"{MLFLOW_DB_PATH}"
@@ -969,28 +1056,38 @@ def main() -> None:
         )
 
     if is_smoke_test:
+
         print(
             "Mode                        : "
             "TEST RAPIDE"
         )
 
-    print("=" * 72)
+    print("=" * 74)
 
     history: list[
         dict[str, float]
     ] = []
 
+    # Meilleure loss de validation reconnue selon le critère
+    # de l'early stopping.
     best_validation_loss = float(
         "inf"
     )
 
     best_epoch = 0
 
+    # Nombre d'époques consécutives sans amélioration suffisante.
+    epochs_without_improvement = 0
+
+    early_stopping_triggered = False
+
+    stopped_epoch = 0
+
     training_start_time = (
         time.perf_counter()
     )
 
-    # Une exécution du script = un run MLflow.
+    # Une exécution du script correspond à un run MLflow.
     with mlflow.start_run(
         run_name=run_name,
     ) as active_run:
@@ -1000,7 +1097,7 @@ def main() -> None:
             f"{active_run.info.run_id}"
         )
 
-        print("=" * 72)
+        print("=" * 74)
 
         log_mlflow_parameters(
             args=args,
@@ -1010,12 +1107,12 @@ def main() -> None:
 
         for epoch in range(
             1,
-            args.epochs + 1,
+            args.max_epochs + 1,
         ):
 
-            # ----------------------------
+            # ====================================================
             # ENTRAÎNEMENT
-            # ----------------------------
+            # ====================================================
 
             train_metrics = train_one_epoch(
                 model=model,
@@ -1028,9 +1125,9 @@ def main() -> None:
                 ),
             )
 
-            # ----------------------------
+            # ====================================================
             # VALIDATION
-            # ----------------------------
+            # ====================================================
 
             validation_metrics = validate_one_epoch(
                 model=model,
@@ -1042,9 +1139,13 @@ def main() -> None:
                 ),
             )
 
-            # ----------------------------
-            # HISTORIQUE
-            # ----------------------------
+            current_validation_loss = (
+                validation_metrics["total"]
+            )
+
+            # ====================================================
+            # HISTORIQUE CSV
+            # ====================================================
 
             history_row = {
                 "epoch": epoch,
@@ -1088,7 +1189,7 @@ def main() -> None:
 
             print(
                 f"Époque "
-                f"{epoch:02d}/{args.epochs:02d} | "
+                f"{epoch:03d}/{args.max_epochs:03d} | "
 
                 f"Train total="
                 f"{train_metrics['total']:.4f} | "
@@ -1109,34 +1210,34 @@ def main() -> None:
                 f"{validation_metrics['kl']:.4f}"
             )
 
-            # ----------------------------
-            # MLFLOW : MÉTRIQUES
-            # ----------------------------
+            # ====================================================
+            # EARLY STOPPING
+            # ====================================================
 
-            log_epoch_to_mlflow(
-                epoch=epoch,
-                train_metrics=train_metrics,
-                validation_metrics=(
-                    validation_metrics
-                ),
+            # Une amélioration est reconnue lorsque :
+            #
+            # nouvelle_loss < meilleure_loss - min_delta
+            #
+            # Avec min_delta = 0.0, toute baisse compte comme
+            # une amélioration.
+            is_improvement = (
+                current_validation_loss
+                < (
+                    best_validation_loss
+                    - args.min_delta
+                )
             )
 
-            # ----------------------------
-            # MEILLEUR CHECKPOINT
-            # ----------------------------
-
-            if (
-                validation_metrics["total"]
-                < best_validation_loss
-            ):
+            if is_improvement:
 
                 best_validation_loss = (
-                    validation_metrics[
-                        "total"
-                    ]
+                    current_validation_loss
                 )
 
                 best_epoch = epoch
+
+                # Une amélioration remet le compteur à zéro.
+                epochs_without_improvement = 0
 
                 save_checkpoint(
                     path=checkpoint_path,
@@ -1155,25 +1256,110 @@ def main() -> None:
                     f"sauvegardé à l'époque {epoch}."
                 )
 
-            # ----------------------------
-            # CSV LOCAL
-            # ----------------------------
+            else:
 
+                epochs_without_improvement += 1
+
+                print(
+                    "  -> Pas d'amélioration suffisante. "
+                    f"Compteur early stopping : "
+                    f"{epochs_without_improvement}/"
+                    f"{args.patience}"
+                )
+
+            # ====================================================
+            # MLFLOW : MÉTRIQUES DE L'ÉPOQUE
+            # ====================================================
+
+            log_epoch_to_mlflow(
+                epoch=epoch,
+                train_metrics=train_metrics,
+                validation_metrics=(
+                    validation_metrics
+                ),
+                best_validation_loss=(
+                    best_validation_loss
+                ),
+                epochs_without_improvement=(
+                    epochs_without_improvement
+                ),
+                is_improvement=(
+                    is_improvement
+                ),
+            )
+
+            # ====================================================
+            # CSV LOCAL
+            # ====================================================
+
+            # On sauvegarde le CSV avant la décision d'arrêt afin
+            # de conserver aussi la dernière époque exécutée.
             save_history_csv(
                 history=history,
                 path=history_path,
             )
 
-        # ========================================================
-        # FIN DE L'ENTRAÎNEMENT
-        # ========================================================
+            # ====================================================
+            # DÉCISION D'ARRÊT
+            # ====================================================
+
+            if (
+                epochs_without_improvement
+                >= args.patience
+            ):
+
+                early_stopping_triggered = True
+
+                stopped_epoch = epoch
+
+                print("=" * 74)
+
+                print(
+                    "EARLY STOPPING DÉCLENCHÉ"
+                )
+
+                print(
+                    f"Aucune amélioration suffisante "
+                    f"pendant {args.patience} "
+                    f"époques consécutives."
+                )
+
+                print(
+                    f"Arrêt à l'époque            : "
+                    f"{stopped_epoch}"
+                )
+
+                print(
+                    f"Meilleure époque            : "
+                    f"{best_epoch}"
+                )
+
+                print(
+                    f"Meilleure loss validation   : "
+                    f"{best_validation_loss:.4f}"
+                )
+
+                print("=" * 74)
+
+                break
+
+        # Si l'early stopping ne s'est pas déclenché,
+        # l'entraînement est allé jusqu'au nombre maximal d'époques.
+        if not early_stopping_triggered:
+
+            stopped_epoch = len(
+                history
+            )
 
         training_duration_seconds = (
             time.perf_counter()
             - training_start_time
         )
 
-        # Résumé du run.
+        # ========================================================
+        # MLFLOW : MÉTRIQUES FINALES
+        # ========================================================
+
         mlflow.log_metrics(
             {
                 "best_epoch": float(
@@ -1188,13 +1374,30 @@ def main() -> None:
                     len(history)
                 ),
 
+                "stopped_epoch": float(
+                    stopped_epoch
+                ),
+
+                "early_stopping_triggered": (
+                    1.0
+                    if early_stopping_triggered
+                    else 0.0
+                ),
+
+                "final_epochs_without_improvement": float(
+                    epochs_without_improvement
+                ),
+
                 "training_duration_seconds": (
                     training_duration_seconds
                 ),
             }
         )
 
-        # Checkpoint comme artefact MLflow.
+        # ========================================================
+        # MLFLOW : ARTEFACTS
+        # ========================================================
+
         if checkpoint_path.exists():
 
             mlflow.log_artifact(
@@ -1202,7 +1405,6 @@ def main() -> None:
                 artifact_path="checkpoints",
             )
 
-        # Historique CSV comme artefact MLflow.
         if history_path.exists():
 
             mlflow.log_artifact(
@@ -1212,7 +1414,10 @@ def main() -> None:
                 ),
             )
 
-        # Tags utiles dans l'interface.
+        # ========================================================
+        # MLFLOW : TAGS
+        # ========================================================
+
         mlflow.set_tag(
             "best_checkpoint",
             checkpoint_path.name,
@@ -1227,11 +1432,33 @@ def main() -> None:
             ),
         )
 
-        print("=" * 72)
+        mlflow.set_tag(
+            "early_stopping_triggered",
+            str(
+                early_stopping_triggered
+            ),
+        )
+
+        mlflow.set_tag(
+            "stopping_reason",
+            (
+                "early_stopping"
+                if early_stopping_triggered
+                else "max_epochs_reached"
+            ),
+        )
+
+        # ========================================================
+        # AFFICHAGE FINAL
+        # ========================================================
+
+        print("=" * 74)
+
         print(
             "ENTRAÎNEMENT TERMINÉ"
         )
-        print("=" * 72)
+
+        print("=" * 74)
 
         print(
             f"MLflow run ID               : "
@@ -1246,6 +1473,21 @@ def main() -> None:
         print(
             f"Meilleure loss validation   : "
             f"{best_validation_loss:.4f}"
+        )
+
+        print(
+            f"Époques réellement exécutées: "
+            f"{len(history)}"
+        )
+
+        print(
+            f"Époque d'arrêt              : "
+            f"{stopped_epoch}"
+        )
+
+        print(
+            f"Early stopping déclenché    : "
+            f"{early_stopping_triggered}"
         )
 
         print(
@@ -1280,7 +1522,7 @@ def main() -> None:
                 f"{MLFLOW_ARTIFACT_DIR}"
             )
 
-        print("=" * 72)
+        print("=" * 74)
 
 
 if __name__ == "__main__":
