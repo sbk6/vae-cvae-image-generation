@@ -1,0 +1,2 @@
+model_type,beta,n_seeds,training_seeds,split_seed_protocol,total_generated_images_across_seeds,total_correct_predictions_across_seeds,conditional_accuracy_pooled,conditional_accuracy_mean,conditional_accuracy_std,conditional_accuracy_min,conditional_accuracy_max
+CVAE,1.0,3,"0,42,123",42,30000,24726,0.8242,0.8241999999999999,0.008681589716175272,0.8169,0.8338
