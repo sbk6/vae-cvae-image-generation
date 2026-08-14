@@ -1,33 +1,68 @@
 """
-Évaluation contrôlée de la diversité des générations CVAE Fashion-MNIST.
+Évaluation multi-seed contrôlée de la diversité des générations CVAE.
 
 Objectif
 --------
-Comparer la diversité des images générées par plusieurs CVAE, notamment
-pour beta = 0.1, beta = 1 et beta = 4.
+Évaluer la robustesse de la diversité générative du CVAE final beta=1
+sur plusieurs seeds d'entraînement, tout en contrôlant les vecteurs latents.
 
-La comparaison est contrôlée :
-- les mêmes vecteurs latents z sont utilisés pour tous les CVAE ;
-- les mêmes vecteurs z sont également utilisés pour toutes les classes ;
-- le jeu officiel de test Fashion-MNIST n'est jamais utilisé.
+Protocole final
+---------------
+Par défaut, le script compare trois checkpoints CVAE beta=1 :
 
-Deux familles de métriques sont calculées :
+- training_seed = 0 ;
+- training_seed = 42 ;
+- training_seed = 123.
+
+Le split train/validation du protocole reste fixé à :
+
+    split_seed = 42
+
+Une seule banque de vecteurs latents z ~ N(0, I) est créée sur CPU.
+La même banque est réutilisée :
+
+- pour les trois seeds d'entraînement ;
+- pour les dix classes Fashion-MNIST.
+
+Ainsi, les différences observées ne proviennent pas de tirages latents
+différents.
+
+Métriques
+---------
+Deux familles de métriques sont calculées, classe par classe puis
+agrégées en moyenne macro sur les dix classes :
 
 1. Diversité pixel
-   RMS moyen des différences entre toutes les paires d'images d'une même
-   classe.
+   RMS pixel global entre les paires de générations d'une même classe.
 
 2. Diversité sémantique
-   Distance cosinus moyenne entre les représentations pénultièmes produites
-   par le classifieur Fashion-MNIST indépendant.
+   Distance cosinus moyenne entre les représentations pénultièmes du
+   classifieur Fashion-MNIST indépendant.
 
-Les métriques sont calculées :
+Chaque métrique est calculée :
+
 - sur toutes les images générées ;
-- uniquement sur les images jugées cohérentes avec la classe demandée par
-  le classifieur indépendant.
+- uniquement sur les générations jugées cohérentes avec la classe
+  demandée par le classifieur indépendant.
 
-Cette seconde mesure est importante : elle évite de considérer comme
-"divers" un modèle qui produit surtout des images incohérentes ou hors classe.
+La seconde version est particulièrement importante : elle évite de
+récompenser artificiellement un modèle qui serait "divers" surtout
+parce qu'il produit des images hors classe.
+
+Sorties
+-------
+Le script crée notamment :
+
+- generation_diversity_multiseed_runs.csv
+- generation_diversity_multiseed_summary.csv
+- generation_diversity_multiseed_per_class.csv
+- generation_diversity_multiseed_per_class_summary.csv
+- generation_diversity_pixel_coherent_by_seed.png
+- generation_diversity_feature_coherent_by_seed.png
+- generation_diversity_pixel_per_class_mean_std.png
+- generation_diversity_feature_per_class_mean_std.png
+
+Le jeu officiel de test Fashion-MNIST n'est jamais utilisé.
 """
 
 from __future__ import annotations
@@ -41,13 +76,13 @@ import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 from models.cvae import CVAE
 from models.fashion_classifier import FashionMNISTClassifier
@@ -73,9 +108,17 @@ FASHION_CLASSES = [
 ]
 
 DEFAULT_CVAE_CHECKPOINTS = [
-    PROJECT_ROOT / "checkpoints" / "cvae_beta_01_seed42_final.pt",
-    PROJECT_ROOT / "checkpoints" / "cvae_beta_1_seed42_final.pt",
-    PROJECT_ROOT / "checkpoints" / "cvae_beta_4_seed42_final.pt",
+    PROJECT_ROOT
+    / "checkpoints"
+    / "cvae_beta_1_seed0_gpu_multiseed.pt",
+
+    PROJECT_ROOT
+    / "checkpoints"
+    / "cvae_beta_1_seed42_final.pt",
+
+    PROJECT_ROOT
+    / "checkpoints"
+    / "cvae_beta_1_seed123_gpu_multiseed.pt",
 ]
 
 DEFAULT_CLASSIFIER_CHECKPOINT = (
@@ -87,7 +130,15 @@ DEFAULT_CLASSIFIER_CHECKPOINT = (
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
     / "results"
-    / "generation_diversity"
+    / "generation_diversity_multiseed_final"
+)
+
+DEFAULT_MLFLOW_EXPERIMENT = (
+    "fashion_mnist_final_evaluation"
+)
+
+DEFAULT_MLFLOW_RUN_NAME = (
+    "cvae_beta1_multiseed_generation_diversity"
 )
 
 
@@ -98,7 +149,7 @@ DEFAULT_OUTPUT_DIR = (
 @dataclass
 class LoadedCVAE:
     """
-    Informations utiles associées à un CVAE chargé.
+    Informations utiles associées à un checkpoint CVAE.
     """
 
     model: CVAE
@@ -108,6 +159,8 @@ class LoadedCVAE:
     latent_dim: int
     hidden_dim: int
     num_classes: int
+    training_seed: int
+    checkpoint_split_seed: int | None
 
 
 # ============================================================
@@ -116,13 +169,13 @@ class LoadedCVAE:
 
 def parse_args() -> argparse.Namespace:
     """
-    Lire les arguments de la ligne de commande.
+    Lire et valider les arguments de la ligne de commande.
     """
 
     parser = argparse.ArgumentParser(
         description=(
-            "Mesurer la diversité intra-classe des générations "
-            "CVAE Fashion-MNIST."
+            "Mesurer la diversité multi-seed du CVAE final "
+            "beta=1 sur Fashion-MNIST."
         )
     )
 
@@ -132,8 +185,8 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_CVAE_CHECKPOINTS,
         help=(
-            "Checkpoints CVAE à comparer. "
-            "Par défaut : beta 0.1, 1 et 4."
+            "Checkpoints CVAE finaux à comparer. "
+            "Par défaut : beta=1, seeds 0, 42 et 123."
         ),
     )
 
@@ -147,11 +200,42 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--expected-beta",
+        type=float,
+        default=1.0,
+        help=(
+            "Valeur de beta attendue dans tous les checkpoints. "
+            "Valeur par défaut : 1."
+        ),
+    )
+
+    parser.add_argument(
+        "--expected-training-seeds",
+        nargs="+",
+        type=int,
+        default=[0, 42, 123],
+        help=(
+            "Seeds d'entraînement attendues. "
+            "Par défaut : 0 42 123."
+        ),
+    )
+
+    parser.add_argument(
+        "--split-seed-protocol",
+        type=int,
+        default=42,
+        help=(
+            "Seed du split train/validation du protocole final. "
+            "Valeur par défaut : 42."
+        ),
+    )
+
+    parser.add_argument(
         "--samples-per-class",
         type=int,
         default=1000,
         help=(
-            "Nombre d'images générées par classe et par CVAE. "
+            "Nombre d'images générées par classe et par seed. "
             "Valeur par défaut : 1000."
         ),
     )
@@ -171,14 +255,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=42,
         help=(
-            "Seed utilisée pour créer la banque latente commune. "
+            "Seed de la banque latente partagée. "
             "Valeur par défaut : 42."
         ),
     )
 
     parser.add_argument(
         "--device",
-        choices=["auto", "cpu", "cuda"],
+        choices=[
+            "auto",
+            "cpu",
+            "cuda",
+        ],
         default="auto",
         help=(
             "Appareil de calcul. "
@@ -190,21 +278,27 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
-        help="Dossier de sauvegarde des résultats.",
+        help=(
+            "Dossier de sauvegarde des résultats."
+        ),
     )
 
     parser.add_argument(
         "--mlflow-experiment-name",
         type=str,
-        default="fashion_mnist_generation_diversity",
-        help="Nom de l'expérience MLflow.",
+        default=DEFAULT_MLFLOW_EXPERIMENT,
+        help=(
+            "Nom de l'expérience MLflow."
+        ),
     )
 
     parser.add_argument(
         "--mlflow-run-name",
         type=str,
-        default="cvae_generation_diversity_seed42_final",
-        help="Nom du run MLflow.",
+        default=DEFAULT_MLFLOW_RUN_NAME,
+        help=(
+            "Nom du run MLflow."
+        ),
     )
 
     parser.add_argument(
@@ -227,6 +321,24 @@ def parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
 
+    if len(args.checkpoints) == 0:
+        parser.error(
+            "Au moins un checkpoint CVAE doit être fourni."
+        )
+
+    if len(args.expected_training_seeds) == 0:
+        parser.error(
+            "--expected-training-seeds ne peut pas être vide."
+        )
+
+    if (
+        len(set(args.expected_training_seeds))
+        != len(args.expected_training_seeds)
+    ):
+        parser.error(
+            "--expected-training-seeds contient des doublons."
+        )
+
     if args.samples_per_class < 2:
         parser.error(
             "--samples-per-class doit être >= 2."
@@ -237,7 +349,39 @@ def parse_args() -> argparse.Namespace:
             "--generation-batch-size doit être >= 1."
         )
 
+    if not args.mlflow_experiment_name.strip():
+        parser.error(
+            "--mlflow-experiment-name ne peut pas être vide."
+        )
+
+    if not args.mlflow_run_name.strip():
+        parser.error(
+            "--mlflow-run-name ne peut pas être vide."
+        )
+
     return args
+
+
+# ============================================================
+# CHEMINS
+# ============================================================
+
+def resolve_project_path(
+    path: Path,
+) -> Path:
+    """
+    Résoudre un chemin relatif depuis la racine du sous-projet.
+    """
+
+    path = Path(path)
+
+    if path.is_absolute():
+        return path.resolve()
+
+    return (
+        PROJECT_ROOT
+        / path
+    ).resolve()
 
 
 # ============================================================
@@ -255,6 +399,7 @@ def select_device(
         return torch.device("cpu")
 
     if requested == "cuda":
+
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "CUDA a été demandé mais aucun GPU CUDA "
@@ -285,7 +430,7 @@ def set_random_seed(
 
 
 # ============================================================
-# CHARGEMENT DES CHECKPOINTS
+# CHARGEMENT GÉNÉRIQUE DES CHECKPOINTS
 # ============================================================
 
 def load_torch_checkpoint(
@@ -296,7 +441,9 @@ def load_torch_checkpoint(
     Charger un checkpoint PyTorch.
     """
 
-    path = Path(path)
+    path = resolve_project_path(
+        path
+    )
 
     if not path.exists():
         raise FileNotFoundError(
@@ -304,19 +451,19 @@ def load_torch_checkpoint(
         )
 
     try:
-        checkpoint = torch.load(
+
+        return torch.load(
             path,
             map_location=device,
             weights_only=False,
         )
 
     except TypeError:
-        checkpoint = torch.load(
+
+        return torch.load(
             path,
             map_location=device,
         )
-
-    return checkpoint
 
 
 def nested_checkpoint_value(
@@ -327,14 +474,20 @@ def nested_checkpoint_value(
     """
     Rechercher une valeur dans plusieurs zones usuelles
     d'un checkpoint.
+
+    Le champ ``configuration`` est explicitement inclus car
+    c'est celui utilisé par les scripts d'entraînement du projet.
     """
 
     if not isinstance(checkpoint, dict):
         return default
 
-    scopes = [checkpoint]
+    scopes = [
+        checkpoint
+    ]
 
     for key in (
+        "configuration",
         "config",
         "model_config",
         "hyperparameters",
@@ -342,15 +495,27 @@ def nested_checkpoint_value(
         "params",
         "training_config",
     ):
-        value = checkpoint.get(key)
 
-        if isinstance(value, dict):
-            scopes.append(value)
+        value = checkpoint.get(
+            key
+        )
+
+        if isinstance(
+            value,
+            dict,
+        ):
+            scopes.append(
+                value
+            )
 
     for scope in scopes:
+
         for name in names:
+
             if name in scope:
-                return scope[name]
+                return scope[
+                    name
+                ]
 
     return default
 
@@ -362,10 +527,16 @@ def extract_state_dict(
     Extraire le state_dict depuis différents formats possibles.
     """
 
-    if isinstance(checkpoint, nn.Module):
+    if isinstance(
+        checkpoint,
+        nn.Module,
+    ):
         return checkpoint.state_dict()
 
-    if not isinstance(checkpoint, dict):
+    if not isinstance(
+        checkpoint,
+        dict,
+    ):
         raise TypeError(
             "Format de checkpoint non pris en charge : "
             f"{type(checkpoint).__name__}"
@@ -379,13 +550,21 @@ def extract_state_dict(
     )
 
     for key in possible_keys:
-        candidate = checkpoint.get(key)
+
+        candidate = checkpoint.get(
+            key
+        )
 
         if (
-            isinstance(candidate, dict)
+            isinstance(
+                candidate,
+                dict,
+            )
             and candidate
             and all(
-                torch.is_tensor(value)
+                torch.is_tensor(
+                    value
+                )
                 for value in candidate.values()
             )
         ):
@@ -394,7 +573,9 @@ def extract_state_dict(
     if (
         checkpoint
         and all(
-            torch.is_tensor(value)
+            torch.is_tensor(
+                value
+            )
             for value in checkpoint.values()
         )
     ):
@@ -410,19 +591,23 @@ def strip_module_prefix(
     state_dict: dict[str, torch.Tensor],
 ) -> dict[str, torch.Tensor]:
     """
-    Retirer le préfixe 'module.' éventuellement ajouté
-    par DataParallel.
+    Retirer le préfixe ``module.`` de DataParallel si nécessaire.
     """
 
     if (
         state_dict
         and all(
-            key.startswith("module.")
+            key.startswith(
+                "module."
+            )
             for key in state_dict
         )
     ):
+
         return {
-            key[len("module."):]: value
+            key[
+                len("module.") :
+            ]: value
             for key, value in state_dict.items()
         }
 
@@ -439,28 +624,40 @@ def instantiate_cvae(
     num_classes: int,
 ) -> CVAE:
     """
-    Construire un CVAE en respectant la signature réelle
-    de sa classe.
+    Construire un CVAE en respectant sa signature réelle.
     """
 
     signature = inspect.signature(
         CVAE.__init__
     )
 
-    parameters = signature.parameters
+    parameters = (
+        signature.parameters
+    )
 
-    kwargs: dict[str, Any] = {}
+    kwargs: dict[
+        str,
+        Any
+    ] = {}
 
     if "latent_dim" in parameters:
-        kwargs["latent_dim"] = latent_dim
+        kwargs[
+            "latent_dim"
+        ] = latent_dim
 
     if "hidden_dim" in parameters:
-        kwargs["hidden_dim"] = hidden_dim
+        kwargs[
+            "hidden_dim"
+        ] = hidden_dim
 
     if "num_classes" in parameters:
-        kwargs["num_classes"] = num_classes
+        kwargs[
+            "num_classes"
+        ] = num_classes
 
-    return CVAE(**kwargs)
+    return CVAE(
+        **kwargs
+    )
 
 
 def load_cvae_checkpoint(
@@ -471,15 +668,36 @@ def load_cvae_checkpoint(
     Charger un checkpoint CVAE avec ses métadonnées.
     """
 
+    checkpoint_path = resolve_project_path(
+        path
+    )
+
     checkpoint = load_torch_checkpoint(
-        path,
+        checkpoint_path,
         device,
     )
+
+    model_type = nested_checkpoint_value(
+        checkpoint,
+        [
+            "model_type",
+        ],
+        None,
+    )
+
+    if model_type != "CVAE":
+        raise ValueError(
+            "Le checkpoint ne correspond pas à un CVAE : "
+            f"{checkpoint_path.name}. "
+            f"model_type={model_type!r}"
+        )
 
     latent_dim = int(
         nested_checkpoint_value(
             checkpoint,
-            ["latent_dim"],
+            [
+                "latent_dim",
+            ],
             16,
         )
     )
@@ -487,7 +705,9 @@ def load_cvae_checkpoint(
     hidden_dim = int(
         nested_checkpoint_value(
             checkpoint,
-            ["hidden_dim"],
+            [
+                "hidden_dim",
+            ],
             256,
         )
     )
@@ -495,7 +715,10 @@ def load_cvae_checkpoint(
     num_classes = int(
         nested_checkpoint_value(
             checkpoint,
-            ["num_classes", "n_classes"],
+            [
+                "num_classes",
+                "n_classes",
+            ],
             10,
         )
     )
@@ -503,21 +726,72 @@ def load_cvae_checkpoint(
     beta = float(
         nested_checkpoint_value(
             checkpoint,
-            ["beta"],
+            [
+                "beta",
+            ],
             float("nan"),
         )
     )
 
-    best_epoch_value = nested_checkpoint_value(
-        checkpoint,
-        ["best_epoch", "epoch"],
-        None,
+    best_epoch_value = (
+        nested_checkpoint_value(
+            checkpoint,
+            [
+                "best_epoch",
+                "epoch",
+            ],
+            None,
+        )
     )
 
-    if best_epoch_value is None:
-        best_epoch = None
-    else:
-        best_epoch = int(best_epoch_value)
+    best_epoch = (
+        None
+        if best_epoch_value is None
+        else int(
+            best_epoch_value
+        )
+    )
+
+    # Les nouveaux checkpoints contiennent training_seed.
+    # Le checkpoint historique seed=42 contient seulement seed.
+    training_seed_value = (
+        nested_checkpoint_value(
+            checkpoint,
+            [
+                "training_seed",
+                "seed",
+            ],
+            None,
+        )
+    )
+
+    if training_seed_value is None:
+        raise KeyError(
+            "Impossible d'identifier la seed d'entraînement "
+            f"dans {checkpoint_path.name}."
+        )
+
+    training_seed = int(
+        training_seed_value
+    )
+
+    checkpoint_split_seed_value = (
+        nested_checkpoint_value(
+            checkpoint,
+            [
+                "split_seed",
+            ],
+            None,
+        )
+    )
+
+    checkpoint_split_seed = (
+        None
+        if checkpoint_split_seed_value is None
+        else int(
+            checkpoint_split_seed_value
+        )
+    )
 
     model = instantiate_cvae(
         latent_dim=latent_dim,
@@ -526,25 +800,177 @@ def load_cvae_checkpoint(
     )
 
     state_dict = strip_module_prefix(
-        extract_state_dict(checkpoint)
+        extract_state_dict(
+            checkpoint
+        )
     )
 
     model.load_state_dict(
         state_dict
     )
 
-    model.to(device)
+    model.to(
+        device
+    )
+
     model.eval()
 
     return LoadedCVAE(
         model=model,
-        checkpoint_path=Path(path),
+        checkpoint_path=(
+            checkpoint_path
+        ),
         beta=beta,
         best_epoch=best_epoch,
         latent_dim=latent_dim,
         hidden_dim=hidden_dim,
         num_classes=num_classes,
+        training_seed=(
+            training_seed
+        ),
+        checkpoint_split_seed=(
+            checkpoint_split_seed
+        ),
     )
+
+
+def validate_loaded_models(
+    loaded_models: Sequence[LoadedCVAE],
+    expected_beta: float,
+    expected_training_seeds: Sequence[int],
+    split_seed_protocol: int,
+) -> list[LoadedCVAE]:
+    """
+    Auditer les checkpoints et les trier selon l'ordre des seeds attendu.
+    """
+
+    if not loaded_models:
+        raise RuntimeError(
+            "Aucun CVAE chargé."
+        )
+
+    expected_seeds = list(
+        expected_training_seeds
+    )
+
+    if len(loaded_models) != len(
+        expected_seeds
+    ):
+        raise ValueError(
+            "Le nombre de checkpoints ne correspond pas "
+            "au nombre de seeds attendues. "
+            f"Checkpoints={len(loaded_models)}, "
+            f"seeds={len(expected_seeds)}."
+        )
+
+    observed_seeds = [
+        loaded.training_seed
+        for loaded in loaded_models
+    ]
+
+    if (
+        len(set(observed_seeds))
+        != len(observed_seeds)
+    ):
+        raise ValueError(
+            "Plusieurs checkpoints possèdent la même "
+            f"training_seed : {observed_seeds}."
+        )
+
+    if set(observed_seeds) != set(
+        expected_seeds
+    ):
+        raise ValueError(
+            "Les training_seeds observées ne correspondent pas "
+            "au protocole attendu. "
+            f"Observées={sorted(observed_seeds)}, "
+            f"attendues={sorted(expected_seeds)}."
+        )
+
+    for loaded in loaded_models:
+
+        if not math.isclose(
+            loaded.beta,
+            expected_beta,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(
+                f"Beta inattendu dans {loaded.checkpoint_path.name}: "
+                f"{loaded.beta}. Attendu : {expected_beta}."
+            )
+
+        if (
+            loaded.checkpoint_split_seed is not None
+            and loaded.checkpoint_split_seed
+            != split_seed_protocol
+        ):
+            raise ValueError(
+                "split_seed incompatible avec le protocole final "
+                f"dans {loaded.checkpoint_path.name}: "
+                f"{loaded.checkpoint_split_seed}. "
+                f"Attendu : {split_seed_protocol}."
+            )
+
+        # Le checkpoint historique seed=42 a été entraîné avant
+        # l'ajout explicite de split_seed. Son absence est acceptée,
+        # car ce run a déjà été audité comme split_seed=42.
+        if (
+            loaded.checkpoint_split_seed is None
+            and loaded.training_seed != 42
+        ):
+            raise ValueError(
+                "split_seed absent dans un checkpoint récent : "
+                f"{loaded.checkpoint_path.name}."
+            )
+
+    latent_dims = {
+        loaded.latent_dim
+        for loaded in loaded_models
+    }
+
+    hidden_dims = {
+        loaded.hidden_dim
+        for loaded in loaded_models
+    }
+
+    num_classes_values = {
+        loaded.num_classes
+        for loaded in loaded_models
+    }
+
+    if len(latent_dims) != 1:
+        raise ValueError(
+            "Les CVAE n'ont pas la même dimension latente : "
+            f"{sorted(latent_dims)}."
+        )
+
+    if len(hidden_dims) != 1:
+        raise ValueError(
+            "Les CVAE n'ont pas la même dimension cachée : "
+            f"{sorted(hidden_dims)}."
+        )
+
+    if num_classes_values != {
+        len(FASHION_CLASSES)
+    }:
+        raise ValueError(
+            "Le nombre de classes n'est pas compatible "
+            "avec Fashion-MNIST : "
+            f"{sorted(num_classes_values)}."
+        )
+
+    by_seed = {
+        loaded.training_seed: loaded
+        for loaded in loaded_models
+    }
+
+    return [
+        by_seed[
+            seed
+        ]
+        for seed in expected_seeds
+    ]
 
 
 # ============================================================
@@ -554,9 +980,6 @@ def load_cvae_checkpoint(
 def instantiate_classifier() -> FashionMNISTClassifier:
     """
     Construire le classifieur Fashion-MNIST indépendant.
-
-    Le nom réel de la classe dans le projet est :
-    FashionMNISTClassifier.
     """
 
     return FashionMNISTClassifier(
@@ -575,32 +998,45 @@ def load_classifier(
     Charger le classifieur indépendant.
     """
 
+    checkpoint_path = (
+        resolve_project_path(
+            path
+        )
+    )
+
     checkpoint = load_torch_checkpoint(
-        path,
+        checkpoint_path,
         device,
     )
 
     model = instantiate_classifier()
 
     state_dict = strip_module_prefix(
-        extract_state_dict(checkpoint)
+        extract_state_dict(
+            checkpoint
+        )
     )
 
     model.load_state_dict(
         state_dict
     )
 
-    model.to(device)
+    model.to(
+        device
+    )
+
     model.eval()
 
-    validation_accuracy = nested_checkpoint_value(
-        checkpoint,
-        [
-            "validation_accuracy",
-            "best_validation_accuracy",
-            "val_accuracy",
-        ],
-        None,
+    validation_accuracy = (
+        nested_checkpoint_value(
+            checkpoint,
+            [
+                "validation_accuracy",
+                "best_validation_accuracy",
+                "val_accuracy",
+            ],
+            None,
+        )
     )
 
     if validation_accuracy is not None:
@@ -622,32 +1058,31 @@ class PenultimateFeatureExtractor:
     """
     Capturer l'entrée de la dernière couche Linear du classifieur.
 
-    Dans notre classifieur :
-
-        Linear(3136 -> 128)
-        ReLU
-        Dropout
-        Linear(128 -> 10)
-
-    L'entrée de la dernière couche Linear est donc un vecteur
-    de 128 caractéristiques.
-
-    Ce vecteur représente l'image dans l'espace discriminatif
-    appris par le classifieur.
+    Dans le classifieur du projet, cette représentation possède
+    128 dimensions.
     """
 
     def __init__(
         self,
         classifier: nn.Module,
     ) -> None:
-        self.classifier = classifier
 
-        self._latest_features: torch.Tensor | None = None
+        self.classifier = (
+            classifier
+        )
+
+        self._latest_features: (
+            torch.Tensor
+            | None
+        ) = None
 
         linear_layers = [
             module
             for module in classifier.modules()
-            if isinstance(module, nn.Linear)
+            if isinstance(
+                module,
+                nn.Linear,
+            )
         ]
 
         if not linear_layers:
@@ -655,10 +1090,15 @@ class PenultimateFeatureExtractor:
                 "Le classifieur ne contient aucune couche nn.Linear."
             )
 
-        self.final_linear = linear_layers[-1]
+        self.final_linear = (
+            linear_layers[
+                -1
+            ]
+        )
 
         self._hook = (
-            self.final_linear.register_forward_pre_hook(
+            self.final_linear
+            .register_forward_pre_hook(
                 self._capture
             )
         )
@@ -666,7 +1106,10 @@ class PenultimateFeatureExtractor:
     def _capture(
         self,
         module: nn.Module,
-        inputs: tuple[torch.Tensor, ...],
+        inputs: tuple[
+            torch.Tensor,
+            ...
+        ],
     ) -> None:
         """
         Capturer les features juste avant la couche finale.
@@ -680,7 +1123,11 @@ class PenultimateFeatureExtractor:
                 "pénultièmes."
             )
 
-        self._latest_features = inputs[0].detach()
+        self._latest_features = (
+            inputs[
+                0
+            ].detach()
+        )
 
     @torch.no_grad()
     def predict_with_features(
@@ -691,9 +1138,7 @@ class PenultimateFeatureExtractor:
         torch.Tensor,
     ]:
         """
-        Retourner simultanément :
-        - les logits ;
-        - les caractéristiques pénultièmes.
+        Retourner les logits et les caractéristiques pénultièmes.
         """
 
         self._latest_features = None
@@ -730,10 +1175,8 @@ def create_shared_latent_bank(
     seed: int,
 ) -> torch.Tensor:
     """
-    Créer une banque de vecteurs z commune à tous les modèles.
-
-    La banque est créée sur CPU pour rester reproductible,
-    indépendamment du GPU utilisé ensuite.
+    Créer une seule banque z sur CPU, commune aux trois seeds
+    et aux dix classes.
     """
 
     generator = torch.Generator(
@@ -744,14 +1187,13 @@ def create_shared_latent_bank(
         seed
     )
 
-    latent_bank = torch.randn(
+    return torch.randn(
         samples_per_class,
         latent_dim,
         generator=generator,
         dtype=torch.float32,
+        device="cpu",
     )
-
-    return latent_bank
 
 
 # ============================================================
@@ -762,18 +1204,16 @@ def pairwise_pixel_rms(
     samples: torch.Tensor,
 ) -> float:
     """
-    Calculer la distance RMS pixel moyenne entre toutes les paires.
+    Calculer un RMS pixel global sur toutes les paires.
 
-    On évite volontairement de construire une matrice n x n.
-
-    Identité utilisée :
+    L'identité de variance évite de construire une matrice n x n :
 
         somme_{i<j} ||x_i - x_j||²
         =
         n * somme_i ||x_i - moyenne||²
 
-    Cela permet un calcul exact avec une complexité mémoire O(n*d)
-    au lieu de O(n²).
+    La métrique retournée correspond à la racine de la moyenne
+    des différences pixel² sur toutes les paires et dimensions.
     """
 
     if samples.ndim != 2:
@@ -784,7 +1224,9 @@ def pairwise_pixel_rms(
     n, d = samples.shape
 
     if n < 2 or d < 1:
-        return float("nan")
+        return float(
+            "nan"
+        )
 
     samples64 = samples.to(
         dtype=torch.float64
@@ -816,7 +1258,8 @@ def pairwise_pixel_rms(
     )
 
     rms = torch.sqrt(
-        mean_pairwise_squared_per_dimension.clamp_min(
+        mean_pairwise_squared_per_dimension
+        .clamp_min(
             0.0
         )
     )
@@ -830,11 +1273,8 @@ def pairwise_feature_cosine_distance(
     features: torch.Tensor,
 ) -> float:
     """
-    Calculer la distance cosinus moyenne entre toutes les paires
-    de représentations.
-
-    Après normalisation L2, on peut calculer la moyenne exacte
-    sans créer toutes les paires.
+    Calculer exactement la distance cosinus moyenne entre toutes
+    les paires, sans construire une matrice n x n.
     """
 
     if features.ndim != 2:
@@ -842,10 +1282,14 @@ def pairwise_feature_cosine_distance(
             start_dim=1
         )
 
-    n = features.shape[0]
+    n = features.shape[
+        0
+    ]
 
     if n < 2:
-        return float("nan")
+        return float(
+            "nan"
+        )
 
     normalized = F.normalize(
         features.to(
@@ -861,7 +1305,9 @@ def pairwise_feature_cosine_distance(
     )
 
     mean_pairwise_similarity = (
-        summed.dot(summed)
+        summed.dot(
+            summed
+        )
         - n
     ) / (
         n
@@ -874,7 +1320,8 @@ def pairwise_feature_cosine_distance(
     )
 
     mean_pairwise_distance = (
-        mean_pairwise_distance.clamp(
+        mean_pairwise_distance
+        .clamp(
             min=0.0,
             max=2.0,
         )
@@ -889,17 +1336,25 @@ def finite_mean(
     values: Iterable[float],
 ) -> float:
     """
-    Calculer une moyenne en ignorant les NaN éventuels.
+    Moyenne des valeurs finies.
     """
 
     finite_values = [
-        value
+        float(
+            value
+        )
         for value in values
-        if math.isfinite(value)
+        if math.isfinite(
+            float(
+                value
+            )
+        )
     ]
 
     if not finite_values:
-        return float("nan")
+        return float(
+            "nan"
+        )
 
     return float(
         np.mean(
@@ -908,43 +1363,102 @@ def finite_mean(
     )
 
 
-# ============================================================
-# FORMATAGE
-# ============================================================
-
-def beta_label(
-    beta: float,
-) -> str:
+def sample_std(
+    values: Iterable[float],
+) -> float:
     """
-    Formater beta pour l'affichage.
+    Écart-type échantillonnal, ddof=1.
+
+    Retourne NaN si moins de deux valeurs finies sont disponibles.
     """
 
-    if math.isnan(beta):
-        return "unknown"
-
-    if float(beta).is_integer():
-        return str(
-            int(beta)
-        )
-
-    return f"{beta:g}"
-
-
-def beta_metric_token(
-    beta: float,
-) -> str:
-    """
-    Formater beta pour les noms de métriques MLflow.
-    """
-
-    label = beta_label(
-        beta
+    finite_values = np.asarray(
+        [
+            float(
+                value
+            )
+            for value in values
+            if math.isfinite(
+                float(
+                    value
+                )
+            )
+        ],
+        dtype=np.float64,
     )
 
-    return (
-        label
-        .replace("-", "m")
-        .replace(".", "_")
+    if finite_values.size < 2:
+        return float(
+            "nan"
+        )
+
+    return float(
+        np.std(
+            finite_values,
+            ddof=1,
+        )
+    )
+
+
+def finite_min(
+    values: Iterable[float],
+) -> float:
+    """
+    Minimum des valeurs finies.
+    """
+
+    finite_values = [
+        float(
+            value
+        )
+        for value in values
+        if math.isfinite(
+            float(
+                value
+            )
+        )
+    ]
+
+    if not finite_values:
+        return float(
+            "nan"
+        )
+
+    return float(
+        min(
+            finite_values
+        )
+    )
+
+
+def finite_max(
+    values: Iterable[float],
+) -> float:
+    """
+    Maximum des valeurs finies.
+    """
+
+    finite_values = [
+        float(
+            value
+        )
+        for value in values
+        if math.isfinite(
+            float(
+                value
+            )
+        )
+    ]
+
+    if not finite_values:
+        return float(
+            "nan"
+        )
+
+    return float(
+        max(
+            finite_values
+        )
     )
 
 
@@ -952,24 +1466,32 @@ def beta_metric_token(
 # ÉVALUATION D'UN CVAE
 # ============================================================
 
-@torch.no_grad()
+@torch.inference_mode()
 def evaluate_one_cvae(
     loaded: LoadedCVAE,
     classifier_features: PenultimateFeatureExtractor,
     latent_bank: torch.Tensor,
     batch_size: int,
     device: torch.device,
+    split_seed_protocol: int,
+    latent_seed: int,
 ) -> tuple[
     dict[str, Any],
-    list[dict[str, Any]],
+    list[
+        dict[str, Any]
+    ],
 ]:
     """
-    Évaluer la diversité intra-classe d'un CVAE.
+    Évaluer la diversité intra-classe d'un checkpoint CVAE.
     """
 
     model = loaded.model
 
-    samples_per_class = latent_bank.shape[0]
+    samples_per_class = (
+        latent_bank.shape[
+            0
+        ]
+    )
 
     per_class_rows: list[
         dict[str, Any]
@@ -981,22 +1503,35 @@ def evaluate_one_cvae(
     for class_id, class_name in enumerate(
         FASHION_CLASSES
     ):
-        pixel_chunks: list[torch.Tensor] = []
-        feature_chunks: list[torch.Tensor] = []
-        prediction_chunks: list[torch.Tensor] = []
+
+        pixel_chunks: list[
+            torch.Tensor
+        ] = []
+
+        feature_chunks: list[
+            torch.Tensor
+        ] = []
+
+        prediction_chunks: list[
+            torch.Tensor
+        ] = []
 
         for start in range(
             0,
             samples_per_class,
             batch_size,
         ):
+
             end = min(
-                start + batch_size,
+                start
+                + batch_size,
                 samples_per_class,
             )
 
             z = (
-                latent_bank[start:end]
+                latent_bank[
+                    start:end
+                ]
                 .to(
                     device,
                     non_blocking=True,
@@ -1004,10 +1539,12 @@ def evaluate_one_cvae(
             )
 
             labels = torch.full(
-                (
+                size=(
                     end - start,
                 ),
-                class_id,
+                fill_value=(
+                    class_id
+                ),
                 dtype=torch.long,
                 device=device,
             )
@@ -1018,11 +1555,15 @@ def evaluate_one_cvae(
             )
 
             if generated.ndim == 2:
-                generated = generated.view(
-                    generated.shape[0],
-                    1,
-                    28,
-                    28,
+                generated = (
+                    generated.view(
+                        generated.shape[
+                            0
+                        ],
+                        1,
+                        28,
+                        28,
+                    )
                 )
 
             generated = generated.clamp(
@@ -1044,14 +1585,18 @@ def evaluate_one_cvae(
             pixel_chunks.append(
                 generated
                 .detach()
-                .flatten(start_dim=1)
+                .flatten(
+                    start_dim=1
+                )
                 .cpu()
             )
 
             feature_chunks.append(
                 features
                 .detach()
-                .flatten(start_dim=1)
+                .flatten(
+                    start_dim=1
+                )
                 .cpu()
             )
 
@@ -1076,16 +1621,25 @@ def evaluate_one_cvae(
             dim=0,
         )
 
-        coherent_mask = predictions.eq(
-            class_id
+        coherent_mask = (
+            predictions.eq(
+                class_id
+            )
         )
 
         coherent_count = int(
-            coherent_mask.sum().item()
+            coherent_mask
+            .sum()
+            .item()
         )
 
-        total_correct += coherent_count
-        total_generated += samples_per_class
+        total_correct += (
+            coherent_count
+        )
+
+        total_generated += (
+            samples_per_class
+        )
 
         pixel_all = pairwise_pixel_rms(
             pixels
@@ -1098,6 +1652,7 @@ def evaluate_one_cvae(
         )
 
         if coherent_count >= 2:
+
             pixel_coherent = pairwise_pixel_rms(
                 pixels[
                     coherent_mask
@@ -1113,56 +1668,108 @@ def evaluate_one_cvae(
             )
 
         else:
-            pixel_coherent = float("nan")
-            feature_coherent = float("nan")
+
+            pixel_coherent = float(
+                "nan"
+            )
+
+            feature_coherent = float(
+                "nan"
+            )
 
         conditional_accuracy = (
             coherent_count
             / samples_per_class
         )
 
-        row = {
-            "checkpoint": (
-                loaded.checkpoint_path.name
-            ),
-            "beta": loaded.beta,
-            "best_epoch": loaded.best_epoch,
-            "class_id": class_id,
-            "class_name": class_name,
-            "generated_count": (
-                samples_per_class
-            ),
-            "coherent_count": (
-                coherent_count
-            ),
-            "conditional_accuracy": (
-                conditional_accuracy
-            ),
-            "pixel_pairwise_rms_all": (
-                pixel_all
-            ),
-            "pixel_pairwise_rms_coherent": (
-                pixel_coherent
-            ),
-            "feature_cosine_diversity_all": (
-                feature_all
-            ),
-            "feature_cosine_diversity_coherent": (
-                feature_coherent
-            ),
-        }
-
         per_class_rows.append(
-            row
+            {
+                "checkpoint": (
+                    loaded
+                    .checkpoint_path
+                    .name
+                ),
+                "model_type": (
+                    "CVAE"
+                ),
+                "beta": (
+                    loaded.beta
+                ),
+                "training_seed": (
+                    loaded.training_seed
+                ),
+                "split_seed_protocol": (
+                    split_seed_protocol
+                ),
+                "checkpoint_split_seed": (
+                    loaded.checkpoint_split_seed
+                ),
+                "latent_seed": (
+                    latent_seed
+                ),
+                "best_epoch": (
+                    loaded.best_epoch
+                ),
+                "class_id": (
+                    class_id
+                ),
+                "class_name": (
+                    class_name
+                ),
+                "generated_count": (
+                    samples_per_class
+                ),
+                "coherent_count": (
+                    coherent_count
+                ),
+                "conditional_accuracy": (
+                    conditional_accuracy
+                ),
+                "pixel_pairwise_rms_all": (
+                    pixel_all
+                ),
+                "pixel_pairwise_rms_coherent": (
+                    pixel_coherent
+                ),
+                "feature_cosine_diversity_all": (
+                    feature_all
+                ),
+                "feature_cosine_diversity_coherent": (
+                    feature_coherent
+                ),
+            }
         )
 
     summary = {
         "checkpoint": (
-            loaded.checkpoint_path.name
+            loaded
+            .checkpoint_path
+            .name
         ),
-        "beta": loaded.beta,
-        "best_epoch": loaded.best_epoch,
-        "latent_dim": loaded.latent_dim,
+        "model_type": (
+            "CVAE"
+        ),
+        "beta": (
+            loaded.beta
+        ),
+        "training_seed": (
+            loaded.training_seed
+        ),
+        "split_seed_protocol": (
+            split_seed_protocol
+        ),
+        "checkpoint_split_seed": (
+            loaded.checkpoint_split_seed
+        ),
+        "latent_seed": (
+            latent_seed
+        ),
+        "best_epoch": (
+            loaded.best_epoch
+        ),
+        "latent_dim": (
+            loaded.latent_dim
+        ),
         "generated_count": (
             total_generated
         ),
@@ -1214,16 +1821,268 @@ def evaluate_one_cvae(
 
 
 # ============================================================
+# AGRÉGATION MULTI-SEED
+# ============================================================
+
+def build_multiseed_summary(
+    summary_rows: Sequence[
+        dict[str, Any]
+    ],
+    expected_beta: float,
+    expected_training_seeds: Sequence[int],
+    split_seed_protocol: int,
+    latent_seed: int,
+) -> dict[str, Any]:
+    """
+    Agréger les métriques globales sur les seeds d'entraînement.
+    """
+
+    if not summary_rows:
+        raise ValueError(
+            "Aucun résumé individuel à agréger."
+        )
+
+    metric_names = [
+        "conditional_accuracy",
+        "pixel_pairwise_rms_all_macro",
+        "pixel_pairwise_rms_coherent_macro",
+        "feature_cosine_diversity_all_macro",
+        "feature_cosine_diversity_coherent_macro",
+    ]
+
+    aggregated: dict[
+        str,
+        Any
+    ] = {
+        "model_type": (
+            "CVAE"
+        ),
+        "beta": (
+            expected_beta
+        ),
+        "n_seeds": (
+            len(
+                summary_rows
+            )
+        ),
+        "training_seeds": (
+            ",".join(
+                str(
+                    seed
+                )
+                for seed in expected_training_seeds
+            )
+        ),
+        "split_seed_protocol": (
+            split_seed_protocol
+        ),
+        "latent_seed": (
+            latent_seed
+        ),
+        "generated_images_per_seed": int(
+            summary_rows[
+                0
+            ][
+                "generated_count"
+            ]
+        ),
+        "total_generated_images_across_seeds": int(
+            sum(
+                int(
+                    row[
+                        "generated_count"
+                    ]
+                )
+                for row in summary_rows
+            )
+        ),
+        "total_coherent_images_across_seeds": int(
+            sum(
+                int(
+                    row[
+                        "coherent_count"
+                    ]
+                )
+                for row in summary_rows
+            )
+        ),
+    }
+
+    total_generated = (
+        aggregated[
+            "total_generated_images_across_seeds"
+        ]
+    )
+
+    total_coherent = (
+        aggregated[
+            "total_coherent_images_across_seeds"
+        ]
+    )
+
+    aggregated[
+        "conditional_accuracy_pooled"
+    ] = (
+        total_coherent
+        / total_generated
+    )
+
+    for metric_name in metric_names:
+
+        values = [
+            float(
+                row[
+                    metric_name
+                ]
+            )
+            for row in summary_rows
+        ]
+
+        aggregated[
+            f"{metric_name}_mean"
+        ] = finite_mean(
+            values
+        )
+
+        aggregated[
+            f"{metric_name}_std"
+        ] = sample_std(
+            values
+        )
+
+        aggregated[
+            f"{metric_name}_min"
+        ] = finite_min(
+            values
+        )
+
+        aggregated[
+            f"{metric_name}_max"
+        ] = finite_max(
+            values
+        )
+
+    return aggregated
+
+
+def build_per_class_multiseed_summary(
+    per_class_rows: Sequence[
+        dict[str, Any]
+    ],
+) -> list[
+    dict[str, Any]
+]:
+    """
+    Agréger les métriques de chaque classe sur les seeds.
+    """
+
+    output_rows: list[
+        dict[str, Any]
+    ] = []
+
+    metric_names = [
+        "conditional_accuracy",
+        "pixel_pairwise_rms_all",
+        "pixel_pairwise_rms_coherent",
+        "feature_cosine_diversity_all",
+        "feature_cosine_diversity_coherent",
+    ]
+
+    for class_id, class_name in enumerate(
+        FASHION_CLASSES
+    ):
+
+        class_rows = [
+            row
+            for row in per_class_rows
+            if int(
+                row[
+                    "class_id"
+                ]
+            ) == class_id
+        ]
+
+        if not class_rows:
+            raise RuntimeError(
+                f"Aucun résultat pour la classe {class_id}."
+            )
+
+        result: dict[
+            str,
+            Any
+        ] = {
+            "class_id": (
+                class_id
+            ),
+            "class_name": (
+                class_name
+            ),
+            "n_seeds": (
+                len(
+                    class_rows
+                )
+            ),
+        }
+
+        for metric_name in metric_names:
+
+            values = [
+                float(
+                    row[
+                        metric_name
+                    ]
+                )
+                for row in class_rows
+            ]
+
+            result[
+                f"{metric_name}_mean"
+            ] = finite_mean(
+                values
+            )
+
+            result[
+                f"{metric_name}_std"
+            ] = sample_std(
+                values
+            )
+
+            result[
+                f"{metric_name}_min"
+            ] = finite_min(
+                values
+            )
+
+            result[
+                f"{metric_name}_max"
+            ] = finite_max(
+                values
+            )
+
+        output_rows.append(
+            result
+        )
+
+    return output_rows
+
+
+# ============================================================
 # CSV
 # ============================================================
 
 def write_csv(
     path: Path,
-    rows: list[dict[str, Any]],
+    rows: Sequence[
+        dict[str, Any]
+    ],
 ) -> None:
     """
-    Sauvegarder une liste de dictionnaires dans un CSV.
+    Sauvegarder une séquence de dictionnaires dans un CSV.
     """
+
+    rows = list(
+        rows
+    )
 
     if not rows:
         raise ValueError(
@@ -1236,252 +2095,236 @@ def write_csv(
     )
 
     fieldnames = list(
-        rows[0].keys()
+        rows[
+            0
+        ].keys()
     )
 
     with path.open(
-        "w",
+        mode="w",
         newline="",
         encoding="utf-8",
     ) as file:
+
         writer = csv.DictWriter(
             file,
             fieldnames=fieldnames,
         )
 
         writer.writeheader()
-        writer.writerows(rows)
+
+        writer.writerows(
+            rows
+        )
 
 
 # ============================================================
 # FIGURES
 # ============================================================
 
-def save_summary_feature_plot(
-    summary_rows: list[
+def save_metric_by_seed_plot(
+    summary_rows: Sequence[
         dict[str, Any]
     ],
+    metric_name: str,
+    title: str,
+    ylabel: str,
     output_path: Path,
 ) -> None:
     """
-    Tracer la diversité sémantique cohérente moyenne.
+    Tracer une métrique globale pour chaque training_seed.
     """
 
+    rows = sorted(
+        summary_rows,
+        key=lambda row: int(
+            row[
+                "training_seed"
+            ]
+        ),
+    )
+
     labels = [
-        "β="
-        + beta_label(
-            row["beta"]
-        )
-        for row in summary_rows
+        f"seed {int(row['training_seed'])}"
+        for row in rows
     ]
 
     values = [
-        row[
-            "feature_cosine_diversity_coherent_macro"
-        ]
-        for row in summary_rows
+        float(
+            row[
+                metric_name
+            ]
+        )
+        for row in rows
     ]
 
-    fig, ax = plt.subplots(
-        figsize=(8, 5)
+    figure, axis = plt.subplots(
+        figsize=(
+            8,
+            5,
+        )
     )
 
-    ax.bar(
+    axis.bar(
         labels,
         values,
     )
 
-    ax.set_title(
-        "Diversité sémantique intra-classe\n"
-        "(générations cohérentes uniquement)"
+    axis.set_title(
+        title
     )
 
-    ax.set_xlabel(
-        "CVAE"
+    axis.set_xlabel(
+        "Seed d'entraînement"
     )
 
-    ax.set_ylabel(
-        "Distance cosinus moyenne paire-à-paire"
+    axis.set_ylabel(
+        ylabel
     )
 
-    ax.grid(
+    axis.grid(
         axis="y",
         alpha=0.25,
     )
 
-    fig.tight_layout()
+    figure.tight_layout()
 
-    fig.savefig(
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    figure.savefig(
         output_path,
-        dpi=180,
+        dpi=300,
+        bbox_inches="tight",
     )
 
     plt.close(
-        fig
+        figure
     )
 
 
-def save_summary_pixel_plot(
-    summary_rows: list[
+def save_per_class_mean_std_plot(
+    per_class_summary_rows: Sequence[
         dict[str, Any]
     ],
+    mean_field: str,
+    std_field: str,
+    title: str,
+    ylabel: str,
     output_path: Path,
 ) -> None:
     """
-    Tracer la diversité pixel cohérente moyenne.
+    Tracer moyenne ± écart-type multi-seed par classe.
     """
 
-    labels = [
-        "β="
-        + beta_label(
-            row["beta"]
-        )
-        for row in summary_rows
-    ]
-
-    values = [
-        row[
-            "pixel_pairwise_rms_coherent_macro"
-        ]
-        for row in summary_rows
-    ]
-
-    fig, ax = plt.subplots(
-        figsize=(8, 5)
+    rows = sorted(
+        per_class_summary_rows,
+        key=lambda row: int(
+            row[
+                "class_id"
+            ]
+        ),
     )
-
-    ax.bar(
-        labels,
-        values,
-    )
-
-    ax.set_title(
-        "Diversité pixel intra-classe\n"
-        "(générations cohérentes uniquement)"
-    )
-
-    ax.set_xlabel(
-        "CVAE"
-    )
-
-    ax.set_ylabel(
-        "RMS pixel moyen paire-à-paire"
-    )
-
-    ax.grid(
-        axis="y",
-        alpha=0.25,
-    )
-
-    fig.tight_layout()
-
-    fig.savefig(
-        output_path,
-        dpi=180,
-    )
-
-    plt.close(
-        fig
-    )
-
-
-def save_per_class_feature_plot(
-    per_class_rows: list[
-        dict[str, Any]
-    ],
-    output_path: Path,
-) -> None:
-    """
-    Tracer la diversité sémantique cohérente classe par classe.
-    """
-
-    fig, ax = plt.subplots(
-        figsize=(12, 6)
-    )
-
-    betas: list[float] = []
-
-    for row in per_class_rows:
-        beta = row["beta"]
-
-        if beta not in betas:
-            betas.append(
-                beta
-            )
 
     x = np.arange(
-        len(FASHION_CLASSES)
+        len(
+            rows
+        )
     )
 
-    for beta in betas:
-        rows = [
-            row
-            for row in per_class_rows
-            if row["beta"] == beta
-        ]
-
-        rows.sort(
-            key=lambda row: row["class_id"]
-        )
-
-        values = [
-            row[
-                "feature_cosine_diversity_coherent"
-            ]
+    means = np.asarray(
+        [
+            float(
+                row[
+                    mean_field
+                ]
+            )
             for row in rows
-        ]
-
-        ax.plot(
-            x,
-            values,
-            marker="o",
-            label=(
-                "β="
-                + beta_label(
-                    beta
-                )
-            ),
-        )
-
-    ax.set_title(
-        "Diversité sémantique par classe "
-        "(générations cohérentes)"
+        ],
+        dtype=np.float64,
     )
 
-    ax.set_xlabel(
+    stds = np.asarray(
+        [
+            float(
+                row[
+                    std_field
+                ]
+            )
+            for row in rows
+        ],
+        dtype=np.float64,
+    )
+
+    labels = [
+        str(
+            row[
+                "class_name"
+            ]
+        )
+        for row in rows
+    ]
+
+    figure, axis = plt.subplots(
+        figsize=(
+            12,
+            6,
+        )
+    )
+
+    axis.errorbar(
+        x,
+        means,
+        yerr=stds,
+        marker="o",
+        capsize=4,
+        linestyle="-",
+    )
+
+    axis.set_title(
+        title
+    )
+
+    axis.set_xlabel(
         "Classe demandée"
     )
 
-    ax.set_ylabel(
-        "Distance cosinus moyenne paire-à-paire"
+    axis.set_ylabel(
+        ylabel
     )
 
-    ax.set_xticks(
+    axis.set_xticks(
         x
     )
 
-    ax.set_xticklabels(
-        FASHION_CLASSES,
+    axis.set_xticklabels(
+        labels,
         rotation=35,
         ha="right",
     )
 
-    ax.grid(
+    axis.grid(
         axis="y",
         alpha=0.25,
     )
 
-    ax.legend()
+    figure.tight_layout()
 
-    fig.tight_layout()
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    fig.savefig(
+    figure.savefig(
         output_path,
-        dpi=180,
+        dpi=300,
+        bbox_inches="tight",
     )
 
     plt.close(
-        fig
+        figure
     )
 
 
@@ -1514,26 +2357,30 @@ def configure_mlflow(
     str,
 ]:
     """
-    Configurer MLflow avec SQLite.
+    Configurer MLflow avec le backend SQLite du projet.
     """
 
     import mlflow
     from mlflow.tracking import MlflowClient
 
-    if tracking_uri:
-        uri = tracking_uri
-    else:
-        uri = local_sqlite_tracking_uri()
+    uri = (
+        tracking_uri
+        if tracking_uri
+        else local_sqlite_tracking_uri()
+    )
 
     mlflow.set_tracking_uri(
         uri
     )
 
-    existing = mlflow.get_experiment_by_name(
-        experiment_name
+    existing = (
+        mlflow.get_experiment_by_name(
+            experiment_name
+        )
     )
 
     if existing is None:
+
         artifact_dir = (
             PROJECT_ROOT
             / "mlartifacts"
@@ -1552,7 +2399,9 @@ def configure_mlflow(
 
         experiment_id = (
             client.create_experiment(
-                name=experiment_name,
+                name=(
+                    experiment_name
+                ),
                 artifact_location=(
                     artifact_dir.as_uri()
                 ),
@@ -1560,6 +2409,7 @@ def configure_mlflow(
         )
 
     else:
+
         experiment_id = (
             existing.experiment_id
         )
@@ -1571,50 +2421,108 @@ def configure_mlflow(
     )
 
 
+def seed_metric_token(
+    seed: int,
+) -> str:
+    """
+    Formater une seed pour les noms de métriques MLflow.
+    """
+
+    return str(
+        seed
+    ).replace(
+        "-",
+        "m",
+    )
+
+
 def log_results_to_mlflow(
     mlflow: Any,
     args: argparse.Namespace,
     device: torch.device,
     classifier_validation_accuracy: float | None,
-    summary_rows: list[
+    summary_rows: Sequence[
         dict[str, Any]
     ],
-    per_class_rows: list[
+    per_class_rows: Sequence[
         dict[str, Any]
+    ],
+    multiseed_summary: dict[
+        str,
+        Any
     ],
     output_dir: Path,
     duration_seconds: float,
 ) -> None:
     """
-    Journaliser les résultats dans MLflow.
+    Journaliser les résultats individuels et multi-seed dans MLflow.
     """
 
     mlflow.log_params(
         {
+            "evaluation": (
+                "generation_diversity_multiseed"
+            ),
+            "dataset": (
+                "Fashion-MNIST"
+            ),
+            "model_type": (
+                "CVAE"
+            ),
+            "expected_beta": (
+                args.expected_beta
+            ),
+            "expected_training_seeds": (
+                ",".join(
+                    str(
+                        seed
+                    )
+                    for seed in args.expected_training_seeds
+                )
+            ),
+            "split_seed_protocol": (
+                args.split_seed_protocol
+            ),
             "samples_per_class": (
                 args.samples_per_class
             ),
             "generation_batch_size": (
                 args.generation_batch_size
             ),
-            "seed": args.seed,
+            "latent_seed": (
+                args.seed
+            ),
             "num_classes": (
-                len(FASHION_CLASSES)
+                len(
+                    FASHION_CLASSES
+                )
             ),
             "num_cvae": (
-                len(summary_rows)
+                len(
+                    summary_rows
+                )
             ),
-            "device": str(device),
+            "device": (
+                str(
+                    device
+                )
+            ),
             "classifier_checkpoint": (
                 Path(
                     args.classifier_checkpoint
                 ).name
             ),
-            "shared_z_between_cvae": True,
-            "shared_z_between_classes": True,
-            "official_test_used": False,
+            "shared_z_between_cvae": (
+                True
+            ),
+            "shared_z_between_classes": (
+                True
+            ),
+            "official_test_used": (
+                False
+            ),
             "pixel_metric": (
-                "mean_pairwise_rms_per_pixel"
+                "global_pairwise_pixel_rms"
             ),
             "feature_metric": (
                 "mean_pairwise_cosine_distance"
@@ -1625,99 +2533,201 @@ def log_results_to_mlflow(
         }
     )
 
+    mlflow.set_tags(
+        {
+            "dataset": (
+                "Fashion-MNIST"
+            ),
+            "evaluation_type": (
+                "generation_diversity_multiseed"
+            ),
+            "comparison_control": (
+                "shared_latent_vectors"
+            ),
+            "official_test_used": (
+                "False"
+            ),
+        }
+    )
+
     if classifier_validation_accuracy is not None:
+
         mlflow.log_param(
             "classifier_validation_accuracy",
             classifier_validation_accuracy,
         )
 
     for summary in summary_rows:
-        token = beta_metric_token(
-            float(summary["beta"])
+
+        seed = int(
+            summary[
+                "training_seed"
+            ]
+        )
+
+        token = seed_metric_token(
+            seed
         )
 
         mlflow.log_metrics(
             {
                 (
-                    f"conditional_accuracy_beta_{token}"
-                ): summary[
-                    "conditional_accuracy"
-                ],
+                    f"conditional_accuracy_seed_{token}"
+                ): float(
+                    summary[
+                        "conditional_accuracy"
+                    ]
+                ),
                 (
-                    f"pixel_diversity_all_beta_{token}"
-                ): summary[
-                    "pixel_pairwise_rms_all_macro"
-                ],
+                    f"pixel_diversity_all_seed_{token}"
+                ): float(
+                    summary[
+                        "pixel_pairwise_rms_all_macro"
+                    ]
+                ),
                 (
-                    f"pixel_diversity_coherent_beta_{token}"
-                ): summary[
-                    "pixel_pairwise_rms_coherent_macro"
-                ],
+                    f"pixel_diversity_coherent_seed_{token}"
+                ): float(
+                    summary[
+                        "pixel_pairwise_rms_coherent_macro"
+                    ]
+                ),
                 (
-                    f"feature_diversity_all_beta_{token}"
-                ): summary[
-                    "feature_cosine_diversity_all_macro"
-                ],
+                    f"feature_diversity_all_seed_{token}"
+                ): float(
+                    summary[
+                        "feature_cosine_diversity_all_macro"
+                    ]
+                ),
                 (
-                    f"feature_diversity_coherent_beta_{token}"
-                ): summary[
-                    "feature_cosine_diversity_coherent_macro"
-                ],
+                    f"feature_diversity_coherent_seed_{token}"
+                ): float(
+                    summary[
+                        "feature_cosine_diversity_coherent_macro"
+                    ]
+                ),
             }
         )
 
     for row in per_class_rows:
-        token = beta_metric_token(
-            float(row["beta"])
+
+        seed = int(
+            row[
+                "training_seed"
+            ]
         )
 
         class_id = int(
-            row["class_id"]
+            row[
+                "class_id"
+            ]
+        )
+
+        token = seed_metric_token(
+            seed
         )
 
         metrics = {
             (
-                f"conditional_accuracy_beta_"
+                f"conditional_accuracy_seed_"
                 f"{token}_class_{class_id}"
-            ): row[
-                "conditional_accuracy"
-            ],
+            ): float(
+                row[
+                    "conditional_accuracy"
+                ]
+            ),
             (
-                f"pixel_diversity_coherent_beta_"
+                f"pixel_diversity_coherent_seed_"
                 f"{token}_class_{class_id}"
-            ): row[
-                "pixel_pairwise_rms_coherent"
-            ],
+            ): float(
+                row[
+                    "pixel_pairwise_rms_coherent"
+                ]
+            ),
             (
-                f"feature_diversity_coherent_beta_"
+                f"feature_diversity_coherent_seed_"
                 f"{token}_class_{class_id}"
-            ): row[
-                "feature_cosine_diversity_coherent"
-            ],
+            ): float(
+                row[
+                    "feature_cosine_diversity_coherent"
+                ]
+            ),
         }
 
         finite_metrics = {
             name: value
             for name, value in metrics.items()
             if math.isfinite(
-                float(value)
+                value
             )
         }
 
         if finite_metrics:
+
             mlflow.log_metrics(
                 finite_metrics
             )
 
+    aggregate_metric_names = [
+        "conditional_accuracy",
+        "pixel_pairwise_rms_all_macro",
+        "pixel_pairwise_rms_coherent_macro",
+        "feature_cosine_diversity_all_macro",
+        "feature_cosine_diversity_coherent_macro",
+    ]
+
+    for metric_name in aggregate_metric_names:
+
+        mean_value = float(
+            multiseed_summary[
+                f"{metric_name}_mean"
+            ]
+        )
+
+        std_value = float(
+            multiseed_summary[
+                f"{metric_name}_std"
+            ]
+        )
+
+        if math.isfinite(
+            mean_value
+        ):
+            mlflow.log_metric(
+                f"{metric_name}_mean",
+                mean_value,
+            )
+
+        if math.isfinite(
+            std_value
+        ):
+            mlflow.log_metric(
+                f"{metric_name}_std",
+                std_value,
+            )
+
+    mlflow.log_metric(
+        "conditional_accuracy_pooled",
+        float(
+            multiseed_summary[
+                "conditional_accuracy_pooled"
+            ]
+        ),
+    )
+
     mlflow.log_metric(
         "duration_seconds",
-        duration_seconds,
+        float(
+            duration_seconds
+        ),
     )
 
     mlflow.log_artifacts(
-        str(output_dir),
+        str(
+            output_dir
+        ),
         artifact_path=(
-            "generation_diversity"
+            "generation_diversity_multiseed"
         ),
     )
 
@@ -1728,16 +2738,16 @@ def log_results_to_mlflow(
 
 def print_model_results(
     summary: dict[str, Any],
-    per_class_rows: list[
+    per_class_rows: Sequence[
         dict[str, Any]
     ],
 ) -> None:
     """
-    Afficher les résultats détaillés d'un CVAE.
+    Afficher les résultats détaillés d'une seed.
     """
 
     print(
-        "=" * 92
+        "=" * 100
     )
 
     print(
@@ -1746,12 +2756,17 @@ def print_model_results(
     )
 
     print(
-        "=" * 92
+        "=" * 100
+    )
+
+    print(
+        "Training seed                     : "
+        f"{summary['training_seed']}"
     )
 
     print(
         "Beta                              : "
-        f"{beta_label(summary['beta'])}"
+        f"{summary['beta']:g}"
     )
 
     print(
@@ -1790,7 +2805,7 @@ def print_model_results(
     )
 
     print(
-        "-" * 92
+        "-" * 100
     )
 
     print(
@@ -1802,20 +2817,125 @@ def print_model_results(
     )
 
     print(
-        "-" * 92
+        "-" * 100
     )
 
     for row in per_class_rows:
+
         print(
-            f"{row['class_id']:>2}  "
-            f"{row['class_name']:<13} "
-            f"{row['conditional_accuracy']:>9.2%}  "
-            f"{row['pixel_pairwise_rms_coherent']:>11.6f}  "
-            f"{row['feature_cosine_diversity_coherent']:>13.6f}"
+            f"{int(row['class_id']):>2}  "
+            f"{str(row['class_name']):<13} "
+            f"{float(row['conditional_accuracy']):>9.2%}  "
+            f"{float(row['pixel_pairwise_rms_coherent']):>11.6f}  "
+            f"{float(row['feature_cosine_diversity_coherent']):>13.6f}"
         )
 
     print(
-        "=" * 92
+        "=" * 100
+    )
+
+
+def print_multiseed_summary(
+    summary_rows: Sequence[
+        dict[str, Any]
+    ],
+    multiseed_summary: dict[
+        str,
+        Any
+    ],
+) -> None:
+    """
+    Afficher les valeurs individuelles puis moyenne ± écart-type.
+    """
+
+    print(
+        "\n"
+        + "=" * 104
+    )
+
+    print(
+        "DIVERSITÉ CVAE BETA=1 — RÉSULTATS PAR SEED"
+    )
+
+    print(
+        "=" * 104
+    )
+
+    print(
+        f"{'Seed':>6} "
+        f"{'Cond. acc.':>12} "
+        f"{'Pixel ALL':>12} "
+        f"{'Pixel coh.':>12} "
+        f"{'Feature ALL':>13} "
+        f"{'Feature coh.':>13}"
+    )
+
+    print(
+        "-" * 104
+    )
+
+    for row in summary_rows:
+
+        print(
+            f"{int(row['training_seed']):>6} "
+            f"{float(row['conditional_accuracy']):>11.2%} "
+            f"{float(row['pixel_pairwise_rms_all_macro']):>12.6f} "
+            f"{float(row['pixel_pairwise_rms_coherent_macro']):>12.6f} "
+            f"{float(row['feature_cosine_diversity_all_macro']):>13.6f} "
+            f"{float(row['feature_cosine_diversity_coherent_macro']):>13.6f}"
+        )
+
+    print(
+        "=" * 104
+    )
+
+    print(
+        "Moyenne ± écart-type (n="
+        f"{multiseed_summary['n_seeds']})"
+    )
+
+    print(
+        "Conditional accuracy              : "
+        f"{multiseed_summary['conditional_accuracy_mean']:.4%} "
+        "± "
+        f"{multiseed_summary['conditional_accuracy_std']:.4%}"
+    )
+
+    print(
+        "Diversité pixel ALL               : "
+        f"{multiseed_summary['pixel_pairwise_rms_all_macro_mean']:.6f} "
+        "± "
+        f"{multiseed_summary['pixel_pairwise_rms_all_macro_std']:.6f}"
+    )
+
+    print(
+        "Diversité pixel COHERENT          : "
+        f"{multiseed_summary['pixel_pairwise_rms_coherent_macro_mean']:.6f} "
+        "± "
+        f"{multiseed_summary['pixel_pairwise_rms_coherent_macro_std']:.6f}"
+    )
+
+    print(
+        "Diversité feature ALL             : "
+        f"{multiseed_summary['feature_cosine_diversity_all_macro_mean']:.6f} "
+        "± "
+        f"{multiseed_summary['feature_cosine_diversity_all_macro_std']:.6f}"
+    )
+
+    print(
+        "Diversité feature COHERENT        : "
+        f"{multiseed_summary['feature_cosine_diversity_coherent_macro_mean']:.6f} "
+        "± "
+        f"{multiseed_summary['feature_cosine_diversity_coherent_macro_std']:.6f}"
+    )
+
+    print(
+        "Conditional accuracy pooled       : "
+        f"{multiseed_summary['conditional_accuracy_pooled']:.4%}"
+    )
+
+    print(
+        "=" * 104
     )
 
 
@@ -1830,7 +2950,9 @@ def main() -> None:
 
     args = parse_args()
 
-    start_time = time.perf_counter()
+    start_time = (
+        time.perf_counter()
+    )
 
     set_random_seed(
         args.seed
@@ -1840,13 +2962,21 @@ def main() -> None:
         args.device
     )
 
-    output_dir = Path(
-        args.output_dir
-    ).resolve()
+    output_dir = (
+        resolve_project_path(
+            args.output_dir
+        )
+    )
 
     output_dir.mkdir(
         parents=True,
         exist_ok=True,
+    )
+
+    classifier_checkpoint_path = (
+        resolve_project_path(
+            args.classifier_checkpoint
+        )
     )
 
     # --------------------------------------------------------
@@ -1857,9 +2987,7 @@ def main() -> None:
         classifier,
         classifier_validation_accuracy,
     ) = load_classifier(
-        Path(
-            args.classifier_checkpoint
-        ),
+        classifier_checkpoint_path,
         device,
     )
 
@@ -1875,31 +3003,31 @@ def main() -> None:
 
     loaded_models = [
         load_cvae_checkpoint(
-            Path(path),
+            path,
             device,
         )
         for path in args.checkpoints
     ]
 
-    if not loaded_models:
-        raise RuntimeError(
-            "Aucun checkpoint CVAE à évaluer."
-        )
-
-    latent_dims = {
-        loaded.latent_dim
-        for loaded in loaded_models
-    }
-
-    if len(latent_dims) != 1:
-        raise ValueError(
-            "Les CVAE n'ont pas tous la même "
-            "dimension latente : "
-            f"{sorted(latent_dims)}"
-        )
+    loaded_models = validate_loaded_models(
+        loaded_models=(
+            loaded_models
+        ),
+        expected_beta=(
+            args.expected_beta
+        ),
+        expected_training_seeds=(
+            args.expected_training_seeds
+        ),
+        split_seed_protocol=(
+            args.split_seed_protocol
+        ),
+    )
 
     latent_dim = (
-        loaded_models[0].latent_dim
+        loaded_models[
+            0
+        ].latent_dim
     )
 
     # --------------------------------------------------------
@@ -1910,8 +3038,12 @@ def main() -> None:
         samples_per_class=(
             args.samples_per_class
         ),
-        latent_dim=latent_dim,
-        seed=args.seed,
+        latent_dim=(
+            latent_dim
+        ),
+        seed=(
+            args.seed
+        ),
     )
 
     # --------------------------------------------------------
@@ -1919,16 +3051,16 @@ def main() -> None:
     # --------------------------------------------------------
 
     print(
-        "=" * 92
+        "=" * 104
     )
 
     print(
-        "ÉVALUATION CONTRÔLÉE DE LA DIVERSITÉ "
-        "DES GÉNÉRATIONS CVAE"
+        "ÉVALUATION MULTI-SEED CONTRÔLÉE DE LA "
+        "DIVERSITÉ DES GÉNÉRATIONS CVAE"
     )
 
     print(
-        "=" * 92
+        "=" * 104
     )
 
     print(
@@ -1938,14 +3070,35 @@ def main() -> None:
 
     print(
         "Classifieur                       : "
-        f"{Path(args.classifier_checkpoint).name}"
+        f"{classifier_checkpoint_path.name}"
     )
 
     if classifier_validation_accuracy is not None:
+
         print(
             "Accuracy validation classifieur   : "
             f"{classifier_validation_accuracy:.4%}"
         )
+
+    print(
+        "Beta attendu                      : "
+        f"{args.expected_beta:g}"
+    )
+
+    print(
+        "Seeds d'entraînement              : "
+        + ", ".join(
+            str(
+                seed
+            )
+            for seed in args.expected_training_seeds
+        )
+    )
+
+    print(
+        "Seed du split protocole           : "
+        f"{args.split_seed_protocol}"
+    )
 
     print(
         "Nombre de CVAE                    : "
@@ -1958,7 +3111,7 @@ def main() -> None:
     )
 
     print(
-        "Images par classe                 : "
+        "Images par classe et par seed     : "
         f"{args.samples_per_class}"
     )
 
@@ -1968,12 +3121,17 @@ def main() -> None:
     )
 
     print(
+        "Images générées au total          : "
+        f"{args.samples_per_class * len(FASHION_CLASSES) * len(loaded_models)}"
+    )
+
+    print(
         "Seed des vecteurs latents         : "
         f"{args.seed}"
     )
 
     print(
-        "Mêmes z entre les CVAE            : OUI"
+        "Mêmes z entre les seeds           : OUI"
     )
 
     print(
@@ -1985,7 +3143,7 @@ def main() -> None:
     )
 
     print(
-        "=" * 92
+        "=" * 104
     )
 
     # --------------------------------------------------------
@@ -1999,6 +3157,7 @@ def main() -> None:
     )
 
     if not args.disable_mlflow:
+
         (
             mlflow_module,
             experiment_id,
@@ -2014,7 +3173,9 @@ def main() -> None:
 
         run_context = (
             mlflow_module.start_run(
-                experiment_id=experiment_id,
+                experiment_id=(
+                    experiment_id
+                ),
                 run_name=(
                     args.mlflow_run_name
                 ),
@@ -2027,7 +3188,7 @@ def main() -> None:
         )
 
         print(
-            "=" * 92
+            "=" * 104
         )
 
     summary_rows: list[
@@ -2039,20 +3200,22 @@ def main() -> None:
     ] = []
 
     try:
+
         with run_context as active_run:
 
             if active_run is not None:
+
                 print(
                     "MLflow run ID                     : "
                     f"{active_run.info.run_id}"
                 )
 
                 print(
-                    "=" * 92
+                    "=" * 104
                 )
 
             # ------------------------------------------------
-            # Évaluation des CVAE
+            # Évaluation des trois seeds
             # ------------------------------------------------
 
             for loaded in loaded_models:
@@ -2066,7 +3229,9 @@ def main() -> None:
                     summary,
                     per_class_rows,
                 ) = evaluate_one_cvae(
-                    loaded=loaded,
+                    loaded=(
+                        loaded
+                    ),
                     classifier_features=(
                         classifier_features
                     ),
@@ -2076,7 +3241,15 @@ def main() -> None:
                     batch_size=(
                         args.generation_batch_size
                     ),
-                    device=device,
+                    device=(
+                        device
+                    ),
+                    split_seed_protocol=(
+                        args.split_seed_protocol
+                    ),
+                    latent_seed=(
+                        args.seed
+                    ),
                 )
 
                 summary_rows.append(
@@ -2088,30 +3261,83 @@ def main() -> None:
                 )
 
                 print_model_results(
-                    summary,
-                    per_class_rows,
+                    summary=(
+                        summary
+                    ),
+                    per_class_rows=(
+                        per_class_rows
+                    ),
                 )
 
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
 
             # ------------------------------------------------
+            # Agrégation multi-seed
+            # ------------------------------------------------
+
+            multiseed_summary = (
+                build_multiseed_summary(
+                    summary_rows=(
+                        summary_rows
+                    ),
+                    expected_beta=(
+                        args.expected_beta
+                    ),
+                    expected_training_seeds=(
+                        args.expected_training_seeds
+                    ),
+                    split_seed_protocol=(
+                        args.split_seed_protocol
+                    ),
+                    latent_seed=(
+                        args.seed
+                    ),
+                )
+            )
+
+            per_class_multiseed_summary = (
+                build_per_class_multiseed_summary(
+                    per_class_rows=(
+                        all_per_class_rows
+                    )
+                )
+            )
+
+            # ------------------------------------------------
             # CSV
             # ------------------------------------------------
 
+            runs_path = (
+                output_dir
+                / "generation_diversity_multiseed_runs.csv"
+            )
+
             summary_path = (
                 output_dir
-                / "generation_diversity_summary.csv"
+                / "generation_diversity_multiseed_summary.csv"
             )
 
             per_class_path = (
                 output_dir
-                / "generation_diversity_per_class.csv"
+                / "generation_diversity_multiseed_per_class.csv"
+            )
+
+            per_class_summary_path = (
+                output_dir
+                / "generation_diversity_multiseed_per_class_summary.csv"
+            )
+
+            write_csv(
+                runs_path,
+                summary_rows,
             )
 
             write_csv(
                 summary_path,
-                summary_rows,
+                [
+                    multiseed_summary
+                ],
             )
 
             write_csv(
@@ -2119,38 +3345,115 @@ def main() -> None:
                 all_per_class_rows,
             )
 
+            write_csv(
+                per_class_summary_path,
+                per_class_multiseed_summary,
+            )
+
             # ------------------------------------------------
             # FIGURES
             # ------------------------------------------------
 
-            feature_plot_path = (
+            pixel_by_seed_path = (
                 output_dir
-                / "generation_diversity_feature_coherent.png"
+                / "generation_diversity_pixel_coherent_by_seed.png"
             )
 
-            pixel_plot_path = (
+            feature_by_seed_path = (
                 output_dir
-                / "generation_diversity_pixel_coherent.png"
+                / "generation_diversity_feature_coherent_by_seed.png"
             )
 
-            per_class_feature_plot_path = (
+            pixel_per_class_path = (
                 output_dir
-                / "generation_diversity_feature_per_class.png"
+                / "generation_diversity_pixel_per_class_mean_std.png"
             )
 
-            save_summary_feature_plot(
-                summary_rows,
-                feature_plot_path,
+            feature_per_class_path = (
+                output_dir
+                / "generation_diversity_feature_per_class_mean_std.png"
             )
 
-            save_summary_pixel_plot(
-                summary_rows,
-                pixel_plot_path,
+            save_metric_by_seed_plot(
+                summary_rows=(
+                    summary_rows
+                ),
+                metric_name=(
+                    "pixel_pairwise_rms_coherent_macro"
+                ),
+                title=(
+                    "Diversité pixel cohérente du CVAE final "
+                    "selon la seed d'entraînement"
+                ),
+                ylabel=(
+                    "RMS pixel global paire-à-paire"
+                ),
+                output_path=(
+                    pixel_by_seed_path
+                ),
             )
 
-            save_per_class_feature_plot(
-                all_per_class_rows,
-                per_class_feature_plot_path,
+            save_metric_by_seed_plot(
+                summary_rows=(
+                    summary_rows
+                ),
+                metric_name=(
+                    "feature_cosine_diversity_coherent_macro"
+                ),
+                title=(
+                    "Diversité sémantique cohérente du CVAE final "
+                    "selon la seed d'entraînement"
+                ),
+                ylabel=(
+                    "Distance cosinus moyenne paire-à-paire"
+                ),
+                output_path=(
+                    feature_by_seed_path
+                ),
+            )
+
+            save_per_class_mean_std_plot(
+                per_class_summary_rows=(
+                    per_class_multiseed_summary
+                ),
+                mean_field=(
+                    "pixel_pairwise_rms_coherent_mean"
+                ),
+                std_field=(
+                    "pixel_pairwise_rms_coherent_std"
+                ),
+                title=(
+                    "Diversité pixel cohérente par classe "
+                    "(moyenne ± écart-type, 3 seeds)"
+                ),
+                ylabel=(
+                    "RMS pixel global paire-à-paire"
+                ),
+                output_path=(
+                    pixel_per_class_path
+                ),
+            )
+
+            save_per_class_mean_std_plot(
+                per_class_summary_rows=(
+                    per_class_multiseed_summary
+                ),
+                mean_field=(
+                    "feature_cosine_diversity_coherent_mean"
+                ),
+                std_field=(
+                    "feature_cosine_diversity_coherent_std"
+                ),
+                title=(
+                    "Diversité sémantique cohérente par classe "
+                    "(moyenne ± écart-type, 3 seeds)"
+                ),
+                ylabel=(
+                    "Distance cosinus moyenne paire-à-paire"
+                ),
+                output_path=(
+                    feature_per_class_path
+                ),
             )
 
             duration_seconds = (
@@ -2163,10 +3466,17 @@ def main() -> None:
             # ------------------------------------------------
 
             if mlflow_module is not None:
+
                 log_results_to_mlflow(
-                    mlflow=mlflow_module,
-                    args=args,
-                    device=device,
+                    mlflow=(
+                        mlflow_module
+                    ),
+                    args=(
+                        args
+                    ),
+                    device=(
+                        device
+                    ),
                     classifier_validation_accuracy=(
                         classifier_validation_accuracy
                     ),
@@ -2176,7 +3486,12 @@ def main() -> None:
                     per_class_rows=(
                         all_per_class_rows
                     ),
-                    output_dir=output_dir,
+                    multiseed_summary=(
+                        multiseed_summary
+                    ),
+                    output_dir=(
+                        output_dir
+                    ),
                     duration_seconds=(
                         duration_seconds
                     ),
@@ -2186,67 +3501,51 @@ def main() -> None:
             # RÉSUMÉ FINAL
             # ------------------------------------------------
 
-            print(
-                "\n"
-                + "=" * 92
+            print_multiseed_summary(
+                summary_rows=(
+                    summary_rows
+                ),
+                multiseed_summary=(
+                    multiseed_summary
+                ),
             )
 
             print(
-                "COMPARAISON FINALE DE LA DIVERSITÉ"
+                "Runs CSV                          : "
+                f"{runs_path}"
             )
 
             print(
-                "=" * 92
-            )
-
-            print(
-                f"{'Beta':>7}  "
-                f"{'Cond. acc.':>11}  "
-                f"{'Pixel coh.':>12}  "
-                f"{'Feature coh.':>13}"
-            )
-
-            print(
-                "-" * 92
-            )
-
-            for row in summary_rows:
-                print(
-                    f"{beta_label(row['beta']):>7}  "
-                    f"{row['conditional_accuracy']:>10.2%}  "
-                    f"{row['pixel_pairwise_rms_coherent_macro']:>12.6f}  "
-                    f"{row['feature_cosine_diversity_coherent_macro']:>13.6f}"
-                )
-
-            print(
-                "=" * 92
-            )
-
-            print(
-                "Résumé CSV                         : "
+                "Résumé multi-seed CSV            : "
                 f"{summary_path}"
             )
 
             print(
-                "Résultats par classe               : "
+                "Résultats par classe             : "
                 f"{per_class_path}"
             )
 
             print(
-                "Durée totale                       : "
+                "Résumé par classe                : "
+                f"{per_class_summary_path}"
+            )
+
+            print(
+                "Durée totale                     : "
                 f"{duration_seconds:.2f} s"
             )
 
             print(
-                "Jeu officiel de test               : "
+                "Jeu officiel de test             : "
                 "NON UTILISÉ"
             )
 
             print(
-                "=" * 92
+                "=" * 104
             )
 
     finally:
+
         classifier_features.close()
 
 
