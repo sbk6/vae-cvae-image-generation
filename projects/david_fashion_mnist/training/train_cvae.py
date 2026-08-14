@@ -36,20 +36,39 @@ Ce script réalise :
 Le jeu officiel de test de 10 000 images n'est pas utilisé
 pendant l'entraînement.
 
+Reproductibilité
+----------------
+Deux graines sont distinguées :
+
+    split_seed
+        Contrôle uniquement la séparation fixe train / validation.
+
+    seed
+        Contrôle les aléas d'entraînement :
+        - initialisation du modèle ;
+        - ordre des batchs ;
+        - générateurs aléatoires Python / NumPy / PyTorch.
+
+Cette séparation permet de réaliser les expériences multi-seed sur
+exactement le même jeu de validation.
+
 Configuration finale prévue :
 
     max_epochs = 100
     patience   = 10
     min_delta  = 0.0
+    split_seed = 42
 
 Exemple :
 
     python -m training.train_cvae --beta 1
 
-Exemple explicite :
+Exemple multi-seed :
 
     python -m training.train_cvae \
         --beta 1 \
+        --split-seed 42 \
+        --seed 123 \
         --max-epochs 100 \
         --patience 10 \
         --min-delta 0
@@ -157,7 +176,9 @@ def train_one_epoch(
 
     processed_samples = 0
 
-    progress_total = len(dataloader)
+    progress_total = len(
+        dataloader
+    )
 
     if max_batches is not None:
         progress_total = min(
@@ -172,7 +193,10 @@ def train_one_epoch(
         leave=False,
     )
 
-    for batch_index, (images, labels) in progress_bar:
+    for (
+        batch_index,
+        (images, labels),
+    ) in progress_bar:
 
         if (
             max_batches is not None
@@ -206,7 +230,11 @@ def train_one_epoch(
         #
         # Le conditionnement est réalisé dans l'architecture
         # du CVAE, pas directement dans la loss.
-        total_loss, reconstruction_loss, kl_loss = vae_loss(
+        (
+            total_loss,
+            reconstruction_loss,
+            kl_loss,
+        ) = vae_loss(
             reconstruction=reconstruction,
             target=images,
             mu=mu,
@@ -233,21 +261,35 @@ def train_one_epoch(
             * batch_size
         )
 
-        processed_samples += batch_size
+        processed_samples += (
+            batch_size
+        )
 
         progress_bar.set_postfix(
-            total=f"{total_loss.item():.2f}",
-            reconstruction=f"{reconstruction_loss.item():.2f}",
-            kl=f"{kl_loss.item():.2f}",
+            total=(
+                f"{total_loss.item():.2f}"
+            ),
+            reconstruction=(
+                f"{reconstruction_loss.item():.2f}"
+            ),
+            kl=(
+                f"{kl_loss.item():.2f}"
+            ),
         )
 
     return calculate_average_metrics(
-        total_loss_sum=total_loss_sum,
+        total_loss_sum=(
+            total_loss_sum
+        ),
         reconstruction_loss_sum=(
             reconstruction_loss_sum
         ),
-        kl_loss_sum=kl_loss_sum,
-        processed_samples=processed_samples,
+        kl_loss_sum=(
+            kl_loss_sum
+        ),
+        processed_samples=(
+            processed_samples
+        ),
     )
 
 
@@ -282,7 +324,9 @@ def validate_one_epoch(
 
     processed_samples = 0
 
-    progress_total = len(dataloader)
+    progress_total = len(
+        dataloader
+    )
 
     if max_batches is not None:
         progress_total = min(
@@ -297,7 +341,10 @@ def validate_one_epoch(
         leave=False,
     )
 
-    for batch_index, (images, labels) in progress_bar:
+    for (
+        batch_index,
+        (images, labels),
+    ) in progress_bar:
 
         if (
             max_batches is not None
@@ -315,14 +362,20 @@ def validate_one_epoch(
             non_blocking=True,
         )
 
-        batch_size = images.shape[0]
+        batch_size = (
+            images.shape[0]
+        )
 
         reconstruction, mu, logvar, _ = model(
             images,
             labels,
         )
 
-        total_loss, reconstruction_loss, kl_loss = vae_loss(
+        (
+            total_loss,
+            reconstruction_loss,
+            kl_loss,
+        ) = vae_loss(
             reconstruction=reconstruction,
             target=images,
             mu=mu,
@@ -345,15 +398,23 @@ def validate_one_epoch(
             * batch_size
         )
 
-        processed_samples += batch_size
+        processed_samples += (
+            batch_size
+        )
 
     return calculate_average_metrics(
-        total_loss_sum=total_loss_sum,
+        total_loss_sum=(
+            total_loss_sum
+        ),
         reconstruction_loss_sum=(
             reconstruction_loss_sum
         ),
-        kl_loss_sum=kl_loss_sum,
-        processed_samples=processed_samples,
+        kl_loss_sum=(
+            kl_loss_sum
+        ),
+        processed_samples=(
+            processed_samples
+        ),
     )
 
 
@@ -397,7 +458,9 @@ def save_checkpoint(
         "best_validation_loss": (
             best_validation_loss
         ),
-        "configuration": configuration,
+        "configuration": (
+            configuration
+        ),
         "model_state_dict": (
             model.state_dict()
         ),
@@ -429,27 +492,73 @@ def log_mlflow_parameters(
     parameters = {
         "dataset": "Fashion-MNIST",
         "model_type": "CVAE",
-        "beta": args.beta,
+        "beta": (
+            args.beta
+        ),
 
-        # Nombre maximal d'époques.
-        "max_epochs": args.max_epochs,
+        "max_epochs": (
+            args.max_epochs
+        ),
 
-        "batch_size": args.batch_size,
-        "latent_dim": args.latent_dim,
-        "hidden_dim": args.hidden_dim,
-        "num_classes": args.num_classes,
-        "learning_rate": args.learning_rate,
-        "seed": args.seed,
-        "num_workers": args.num_workers,
-        "device": str(device),
+        "batch_size": (
+            args.batch_size
+        ),
+        "latent_dim": (
+            args.latent_dim
+        ),
+        "hidden_dim": (
+            args.hidden_dim
+        ),
+        "num_classes": (
+            args.num_classes
+        ),
+        "learning_rate": (
+            args.learning_rate
+        ),
+
+        # --------------------------------------------------------
+        # REPRODUCTIBILITÉ
+        # --------------------------------------------------------
+        #
+        # seed est conservé pour la compatibilité avec les anciens
+        # runs.
+        #
+        # training_seed rend désormais son rôle explicite.
+        #
+        # split_seed identifie la séparation train / validation.
+        # --------------------------------------------------------
+        "seed": (
+            args.seed
+        ),
+        "training_seed": (
+            args.seed
+        ),
+        "split_seed": (
+            args.split_seed
+        ),
+
+        "num_workers": (
+            args.num_workers
+        ),
+        "device": str(
+            device
+        ),
 
         # Paramètres de l'early stopping.
         "early_stopping": True,
-        "patience": args.patience,
-        "min_delta": args.min_delta,
-        "early_stopping_monitor": "validation_total",
+        "patience": (
+            args.patience
+        ),
+        "min_delta": (
+            args.min_delta
+        ),
+        "early_stopping_monitor": (
+            "validation_total"
+        ),
 
-        "smoke_test": is_smoke_test,
+        "smoke_test": (
+            is_smoke_test
+        ),
 
         "max_train_batches": (
             args.max_train_batches
@@ -492,8 +601,14 @@ def log_mlflow_parameters(
 
 def log_epoch_to_mlflow(
     epoch: int,
-    train_metrics: dict[str, float],
-    validation_metrics: dict[str, float],
+    train_metrics: dict[
+        str,
+        float,
+    ],
+    validation_metrics: dict[
+        str,
+        float,
+    ],
     best_validation_loss: float,
     epochs_without_improvement: int,
     is_improvement: bool,
@@ -507,27 +622,39 @@ def log_epoch_to_mlflow(
     mlflow.log_metrics(
         {
             "train_total": (
-                train_metrics["total"]
+                train_metrics[
+                    "total"
+                ]
             ),
 
             "train_reconstruction": (
-                train_metrics["reconstruction"]
+                train_metrics[
+                    "reconstruction"
+                ]
             ),
 
             "train_kl": (
-                train_metrics["kl"]
+                train_metrics[
+                    "kl"
+                ]
             ),
 
             "validation_total": (
-                validation_metrics["total"]
+                validation_metrics[
+                    "total"
+                ]
             ),
 
             "validation_reconstruction": (
-                validation_metrics["reconstruction"]
+                validation_metrics[
+                    "reconstruction"
+                ]
             ),
 
             "validation_kl": (
-                validation_metrics["kl"]
+                validation_metrics[
+                    "kl"
+                ]
             ),
 
             "best_validation_loss_so_far": (
@@ -660,12 +787,33 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ------------------------------------------------------------
+    # SEED D'ENTRAÎNEMENT
+    # ------------------------------------------------------------
+
     parser.add_argument(
         "--seed",
         type=int,
         default=42,
         help=(
-            "Graine aléatoire. "
+            "Seed d'entraînement : initialisation du modèle, "
+            "ordre des batchs et autres aléas d'entraînement. "
+            "Valeur par défaut : 42."
+        ),
+    )
+
+    # ------------------------------------------------------------
+    # SEED DU SPLIT
+    # ------------------------------------------------------------
+
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=42,
+        help=(
+            "Seed utilisée uniquement pour la séparation fixe "
+            "54 000 train / 6 000 validation. "
+            "Pour les expériences multi-seed, conserver 42. "
             "Valeur par défaut : 42."
         ),
     )
@@ -860,15 +1008,25 @@ def main() -> None:
     Point d'entrée principal de l'entraînement du CVAE.
     """
 
-    parser = build_argument_parser()
+    parser = (
+        build_argument_parser()
+    )
 
-    args = parser.parse_args()
+    args = (
+        parser.parse_args()
+    )
 
     validate_arguments(
         args
     )
 
-    # Reproductibilité.
+    # ------------------------------------------------------------
+    # SEED D'ENTRAÎNEMENT
+    # ------------------------------------------------------------
+    #
+    # Cette seed peut varier entre les runs multi-seed.
+    # ------------------------------------------------------------
+
     set_random_seed(
         args.seed
     )
@@ -879,27 +1037,69 @@ def main() -> None:
     )
 
     pin_memory = (
-        device.type == "cuda"
+        device.type
+        == "cuda"
     )
 
-    # Même séparation train / validation que le VAE.
-    train_loader, validation_loader = create_dataloaders(
-        batch_size=args.batch_size,
-        seed=args.seed,
-        num_workers=args.num_workers,
-        pin_memory=pin_memory,
+    # ------------------------------------------------------------
+    # DATASETS ET DATALOADERS
+    # ------------------------------------------------------------
+    #
+    # split_seed :
+    #   reste fixe afin que VAE et CVAE ainsi que tous les runs
+    #   multi-seed soient évalués sur les mêmes 6 000 images.
+    #
+    # loader_seed :
+    #   suit args.seed et fait partie des aléas d'entraînement.
+    #
+    # seed :
+    #   reste transmis pour préserver la rétrocompatibilité.
+    # ------------------------------------------------------------
+
+    (
+        train_loader,
+        validation_loader,
+    ) = create_dataloaders(
+        batch_size=(
+            args.batch_size
+        ),
+        seed=(
+            args.seed
+        ),
+        num_workers=(
+            args.num_workers
+        ),
+        pin_memory=(
+            pin_memory
+        ),
+        split_seed=(
+            args.split_seed
+        ),
+        loader_seed=(
+            args.seed
+        ),
     )
 
     # Création du CVAE.
     model = CVAE(
-        latent_dim=args.latent_dim,
-        hidden_dim=args.hidden_dim,
-        num_classes=args.num_classes,
-    ).to(device)
+        latent_dim=(
+            args.latent_dim
+        ),
+        hidden_dim=(
+            args.hidden_dim
+        ),
+        num_classes=(
+            args.num_classes
+        ),
+    ).to(
+        device
+    )
 
     optimizer = Adam(
         model.parameters(),
-        lr=args.learning_rate,
+        lr=(
+            args.learning_rate
+        ),
     )
 
     # Une limitation en batchs indique un smoke test.
@@ -911,16 +1111,21 @@ def main() -> None:
     # Construction du nom du run.
     if args.run_name is not None:
 
-        run_name = args.run_name
+        run_name = (
+            args.run_name
+        )
 
     else:
 
         run_name = (
-            f"cvae_beta_{beta_to_tag(args.beta)}"
+            f"cvae_beta_"
+            f"{beta_to_tag(args.beta)}"
         )
 
         if is_smoke_test:
-            run_name += "_smoke"
+            run_name += (
+                "_smoke"
+            )
 
     checkpoint_path = (
         CHECKPOINT_DIR
@@ -932,28 +1137,74 @@ def main() -> None:
         / f"{run_name}_history.csv"
     )
 
-    # Configuration sauvegardée dans le checkpoint.
+    # ------------------------------------------------------------
+    # CONFIGURATION SAUVEGARDÉE DANS LE CHECKPOINT
+    # ------------------------------------------------------------
     #
-    # "epochs" reste présent pour garder la compatibilité avec
-    # les anciens scripts qui pourraient lire cette clé.
+    # "epochs" et "seed" restent présents pour assurer la
+    # compatibilité avec les anciens checkpoints et scripts.
+    #
+    # Les nouvelles clés explicites sont :
+    #
+    # training_seed
+    # split_seed
+    # ------------------------------------------------------------
+
     configuration = {
         "dataset": "Fashion-MNIST",
-        "beta": args.beta,
+        "beta": (
+            args.beta
+        ),
 
-        "epochs": args.max_epochs,
-        "max_epochs": args.max_epochs,
+        "epochs": (
+            args.max_epochs
+        ),
+        "max_epochs": (
+            args.max_epochs
+        ),
 
-        "patience": args.patience,
-        "min_delta": args.min_delta,
+        "patience": (
+            args.patience
+        ),
+        "min_delta": (
+            args.min_delta
+        ),
 
-        "batch_size": args.batch_size,
-        "latent_dim": args.latent_dim,
-        "hidden_dim": args.hidden_dim,
-        "num_classes": args.num_classes,
-        "learning_rate": args.learning_rate,
-        "seed": args.seed,
-        "num_workers": args.num_workers,
-        "device": str(device),
+        "batch_size": (
+            args.batch_size
+        ),
+        "latent_dim": (
+            args.latent_dim
+        ),
+        "hidden_dim": (
+            args.hidden_dim
+        ),
+        "num_classes": (
+            args.num_classes
+        ),
+        "learning_rate": (
+            args.learning_rate
+        ),
+
+        # Compatibilité avec les anciens outils.
+        "seed": (
+            args.seed
+        ),
+
+        # Nouvelles clés méthodologiques.
+        "training_seed": (
+            args.seed
+        ),
+        "split_seed": (
+            args.split_seed
+        ),
+
+        "num_workers": (
+            args.num_workers
+        ),
+        "device": str(
+            device
+        ),
     }
 
     # Réutilise le même backend MLflow SQLite que le VAE.
@@ -966,12 +1217,18 @@ def main() -> None:
         ),
     )
 
-    print("=" * 74)
+    print(
+        "=" * 74
+    )
+
     print(
         "ENTRAÎNEMENT DU CVAE SUR "
         "FASHION-MNIST + MLFLOW + EARLY STOPPING"
     )
-    print("=" * 74)
+
+    print(
+        "=" * 74
+    )
 
     print(
         f"Appareil utilisé            : "
@@ -1029,6 +1286,16 @@ def main() -> None:
     )
 
     print(
+        f"Seed d'entraînement         : "
+        f"{args.seed}"
+    )
+
+    print(
+        f"Seed du split               : "
+        f"{args.split_seed}"
+    )
+
+    print(
         f"Nom du run MLflow           : "
         f"{run_name}"
     )
@@ -1043,7 +1310,10 @@ def main() -> None:
         f"{tracking_uri}"
     )
 
-    if args.mlflow_tracking_uri is None:
+    if (
+        args.mlflow_tracking_uri
+        is None
+    ):
 
         print(
             f"Base SQLite MLflow          : "
@@ -1062,7 +1332,9 @@ def main() -> None:
             "TEST RAPIDE"
         )
 
-    print("=" * 74)
+    print(
+        "=" * 74
+    )
 
     history: list[
         dict[str, float]
@@ -1070,8 +1342,8 @@ def main() -> None:
 
     # Meilleure loss de validation reconnue selon le critère
     # de l'early stopping.
-    best_validation_loss = float(
-        "inf"
+    best_validation_loss = (
+        float("inf")
     )
 
     best_epoch = 0
@@ -1079,7 +1351,9 @@ def main() -> None:
     # Nombre d'époques consécutives sans amélioration suffisante.
     epochs_without_improvement = 0
 
-    early_stopping_triggered = False
+    early_stopping_triggered = (
+        False
+    )
 
     stopped_epoch = 0
 
@@ -1089,7 +1363,9 @@ def main() -> None:
 
     # Une exécution du script correspond à un run MLflow.
     with mlflow.start_run(
-        run_name=run_name,
+        run_name=(
+            run_name
+        ),
     ) as active_run:
 
         print(
@@ -1097,12 +1373,16 @@ def main() -> None:
             f"{active_run.info.run_id}"
         )
 
-        print("=" * 74)
+        print(
+            "=" * 74
+        )
 
         log_mlflow_parameters(
             args=args,
             device=device,
-            is_smoke_test=is_smoke_test,
+            is_smoke_test=(
+                is_smoke_test
+            ),
         )
 
         for epoch in range(
@@ -1114,33 +1394,49 @@ def main() -> None:
             # ENTRAÎNEMENT
             # ====================================================
 
-            train_metrics = train_one_epoch(
-                model=model,
-                dataloader=train_loader,
-                optimizer=optimizer,
-                device=device,
-                beta=args.beta,
-                max_batches=(
-                    args.max_train_batches
-                ),
+            train_metrics = (
+                train_one_epoch(
+                    model=model,
+                    dataloader=(
+                        train_loader
+                    ),
+                    optimizer=(
+                        optimizer
+                    ),
+                    device=device,
+                    beta=(
+                        args.beta
+                    ),
+                    max_batches=(
+                        args.max_train_batches
+                    ),
+                )
             )
 
             # ====================================================
             # VALIDATION
             # ====================================================
 
-            validation_metrics = validate_one_epoch(
-                model=model,
-                dataloader=validation_loader,
-                device=device,
-                beta=args.beta,
-                max_batches=(
-                    args.max_val_batches
-                ),
+            validation_metrics = (
+                validate_one_epoch(
+                    model=model,
+                    dataloader=(
+                        validation_loader
+                    ),
+                    device=device,
+                    beta=(
+                        args.beta
+                    ),
+                    max_batches=(
+                        args.max_val_batches
+                    ),
+                )
             )
 
             current_validation_loss = (
-                validation_metrics["total"]
+                validation_metrics[
+                    "total"
+                ]
             )
 
             # ====================================================
@@ -1151,7 +1447,9 @@ def main() -> None:
                 "epoch": epoch,
 
                 "train_total": (
-                    train_metrics["total"]
+                    train_metrics[
+                        "total"
+                    ]
                 ),
 
                 "train_reconstruction": (
@@ -1161,7 +1459,9 @@ def main() -> None:
                 ),
 
                 "train_kl": (
-                    train_metrics["kl"]
+                    train_metrics[
+                        "kl"
+                    ]
                 ),
 
                 "validation_total": (
@@ -1189,7 +1489,8 @@ def main() -> None:
 
             print(
                 f"Époque "
-                f"{epoch:03d}/{args.max_epochs:03d} | "
+                f"{epoch:03d}/"
+                f"{args.max_epochs:03d} | "
 
                 f"Train total="
                 f"{train_metrics['total']:.4f} | "
@@ -1234,21 +1535,35 @@ def main() -> None:
                     current_validation_loss
                 )
 
-                best_epoch = epoch
+                best_epoch = (
+                    epoch
+                )
 
                 # Une amélioration remet le compteur à zéro.
-                epochs_without_improvement = 0
+                epochs_without_improvement = (
+                    0
+                )
 
                 save_checkpoint(
-                    path=checkpoint_path,
+                    path=(
+                        checkpoint_path
+                    ),
                     model=model,
-                    optimizer=optimizer,
-                    epoch=epoch,
-                    beta=args.beta,
+                    optimizer=(
+                        optimizer
+                    ),
+                    epoch=(
+                        epoch
+                    ),
+                    beta=(
+                        args.beta
+                    ),
                     best_validation_loss=(
                         best_validation_loss
                     ),
-                    configuration=configuration,
+                    configuration=(
+                        configuration
+                    ),
                 )
 
                 print(
@@ -1258,7 +1573,9 @@ def main() -> None:
 
             else:
 
-                epochs_without_improvement += 1
+                epochs_without_improvement += (
+                    1
+                )
 
                 print(
                     "  -> Pas d'amélioration suffisante. "
@@ -1272,8 +1589,12 @@ def main() -> None:
             # ====================================================
 
             log_epoch_to_mlflow(
-                epoch=epoch,
-                train_metrics=train_metrics,
+                epoch=(
+                    epoch
+                ),
+                train_metrics=(
+                    train_metrics
+                ),
                 validation_metrics=(
                     validation_metrics
                 ),
@@ -1295,8 +1616,12 @@ def main() -> None:
             # On sauvegarde le CSV avant la décision d'arrêt afin
             # de conserver aussi la dernière époque exécutée.
             save_history_csv(
-                history=history,
-                path=history_path,
+                history=(
+                    history
+                ),
+                path=(
+                    history_path
+                ),
             )
 
             # ====================================================
@@ -1308,11 +1633,17 @@ def main() -> None:
                 >= args.patience
             ):
 
-                early_stopping_triggered = True
+                early_stopping_triggered = (
+                    True
+                )
 
-                stopped_epoch = epoch
+                stopped_epoch = (
+                    epoch
+                )
 
-                print("=" * 74)
+                print(
+                    "=" * 74
+                )
 
                 print(
                     "EARLY STOPPING DÉCLENCHÉ"
@@ -1339,7 +1670,9 @@ def main() -> None:
                     f"{best_validation_loss:.4f}"
                 )
 
-                print("=" * 74)
+                print(
+                    "=" * 74
+                )
 
                 break
 
@@ -1401,14 +1734,20 @@ def main() -> None:
         if checkpoint_path.exists():
 
             mlflow.log_artifact(
-                str(checkpoint_path),
-                artifact_path="checkpoints",
+                str(
+                    checkpoint_path
+                ),
+                artifact_path=(
+                    "checkpoints"
+                ),
             )
 
         if history_path.exists():
 
             mlflow.log_artifact(
-                str(history_path),
+                str(
+                    history_path
+                ),
                 artifact_path=(
                     "training_histories"
                 ),
@@ -1452,13 +1791,17 @@ def main() -> None:
         # AFFICHAGE FINAL
         # ========================================================
 
-        print("=" * 74)
+        print(
+            "=" * 74
+        )
 
         print(
             "ENTRAÎNEMENT TERMINÉ"
         )
 
-        print("=" * 74)
+        print(
+            "=" * 74
+        )
 
         print(
             f"MLflow run ID               : "
@@ -1491,6 +1834,16 @@ def main() -> None:
         )
 
         print(
+            f"Seed d'entraînement         : "
+            f"{args.seed}"
+        )
+
+        print(
+            f"Seed du split               : "
+            f"{args.split_seed}"
+        )
+
+        print(
             f"Durée d'entraînement        : "
             f"{training_duration_seconds:.2f} secondes"
         )
@@ -1510,7 +1863,10 @@ def main() -> None:
             f"{tracking_uri}"
         )
 
-        if args.mlflow_tracking_uri is None:
+        if (
+            args.mlflow_tracking_uri
+            is None
+        ):
 
             print(
                 f"Base SQLite MLflow          : "
@@ -1522,7 +1878,9 @@ def main() -> None:
                 f"{MLFLOW_ARTIFACT_DIR}"
             )
 
-        print("=" * 74)
+        print(
+            "=" * 74
+        )
 
 
 if __name__ == "__main__":

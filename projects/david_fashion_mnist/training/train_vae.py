@@ -17,20 +17,40 @@ Ce script réalise les opérations suivantes :
 Le jeu officiel de test de 10 000 images n'est pas utilisé pendant
 l'entraînement.
 
+Reproductibilité
+----------------
+Deux graines sont distinguées :
+
+    split_seed
+        Contrôle uniquement la séparation fixe train / validation.
+
+    seed
+        Contrôle les aléas liés à l'entraînement :
+        - initialisation du modèle ;
+        - ordre des batchs ;
+        - générateurs aléatoires Python / NumPy / PyTorch.
+
+Cette séparation est importante pour les expériences multi-seed :
+on conserve exactement le même jeu de validation tout en faisant varier
+les aléas d'entraînement.
+
 Configuration finale prévue :
 
     max_epochs = 100
     patience   = 10
     min_delta  = 0.0
+    split_seed = 42
 
-Exemple :
+Exemple classique :
 
     python -m training.train_vae --beta 1
 
-Il est également possible de préciser :
+Exemple multi-seed :
 
     python -m training.train_vae \
         --beta 1 \
+        --split-seed 42 \
+        --seed 123 \
         --max-epochs 100 \
         --patience 10 \
         --min-delta 0
@@ -91,7 +111,19 @@ DEFAULT_MLFLOW_EXPERIMENT = "fashion_mnist_vae_cvae"
 
 def set_random_seed(seed: int) -> None:
     """
-    Fixe les graines aléatoires pour favoriser la reproductibilité.
+    Fixe les graines aléatoires utilisées pendant l'entraînement.
+
+    Cette seed correspond à la seed d'entraînement.
+
+    Elle contrôle notamment :
+
+    - random ;
+    - NumPy ;
+    - PyTorch ;
+    - CUDA lorsqu'il est disponible.
+
+    Elle ne doit pas être confondue avec split_seed, qui contrôle
+    uniquement la séparation train / validation.
     """
 
     random.seed(seed)
@@ -107,7 +139,9 @@ def set_random_seed(seed: int) -> None:
         torch.backends.cudnn.benchmark = False
 
 
-def select_device(requested_device: str) -> torch.device:
+def select_device(
+    requested_device: str,
+) -> torch.device:
     """
     Sélectionne le CPU ou CUDA.
     """
@@ -118,14 +152,19 @@ def select_device(requested_device: str) -> torch.device:
 
         return torch.device("cpu")
 
-    if requested_device == "cuda" and not torch.cuda.is_available():
+    if (
+        requested_device == "cuda"
+        and not torch.cuda.is_available()
+    ):
         raise RuntimeError(
             "CUDA a été demandé, mais aucune carte graphique "
             "compatible ou aucune version CUDA de PyTorch "
             "n'est disponible."
         )
 
-    return torch.device(requested_device)
+    return torch.device(
+        requested_device
+    )
 
 
 # ================================================================
@@ -138,7 +177,12 @@ def create_dataloaders(
     seed: int,
     num_workers: int,
     pin_memory: bool,
-) -> tuple[DataLoader, DataLoader]:
+    split_seed: Optional[int] = None,
+    loader_seed: Optional[int] = None,
+) -> tuple[
+    DataLoader,
+    DataLoader,
+]:
     """
     Charge Fashion-MNIST et crée les DataLoader train et validation.
 
@@ -148,7 +192,68 @@ def create_dataloaders(
         - 6 000 images de validation.
 
     Les 10 000 images du jeu officiel de test ne sont pas utilisées ici.
+
+    Parameters
+    ----------
+    batch_size:
+        Nombre d'images par batch.
+
+    seed:
+        Paramètre conservé pour la rétrocompatibilité.
+
+        Si split_seed ou loader_seed ne sont pas fournis, cette valeur
+        est utilisée comme dans l'ancienne version du projet.
+
+    num_workers:
+        Nombre de processus utilisés par le DataLoader.
+
+    pin_memory:
+        Active la mémoire épinglée, généralement lorsque CUDA est utilisé.
+
+    split_seed:
+        Seed utilisée uniquement pour créer la séparation
+        train / validation.
+
+        Pour les expériences finales multi-seed, elle doit rester fixe,
+        par exemple :
+
+            split_seed = 42
+
+    loader_seed:
+        Seed utilisée pour contrôler l'ordre aléatoire des batchs
+        d'entraînement.
+
+        Pour les expériences multi-seed, elle correspond à la seed
+        d'entraînement.
+
+    Notes
+    -----
+    La présence du paramètre seed permet de préserver la compatibilité
+    avec les anciens scripts du projet qui utilisent encore :
+
+        create_dataloaders(..., seed=42, ...)
+
+    Dans ce cas, si split_seed et loader_seed ne sont pas fournis,
+    l'ancien comportement est conservé.
     """
+
+    # ------------------------------------------------------------
+    # RÉTROCOMPATIBILITÉ
+    # ------------------------------------------------------------
+
+    if split_seed is None:
+        resolved_split_seed = seed
+    else:
+        resolved_split_seed = split_seed
+
+    if loader_seed is None:
+        resolved_loader_seed = seed
+    else:
+        resolved_loader_seed = loader_seed
+
+    # ------------------------------------------------------------
+    # DATASET
+    # ------------------------------------------------------------
 
     transform = transforms.ToTensor()
 
@@ -162,16 +267,36 @@ def create_dataloaders(
     train_size = 54_000
     validation_size = 6_000
 
-    if train_size + validation_size != len(full_train_dataset):
+    if (
+        train_size
+        + validation_size
+        != len(full_train_dataset)
+    ):
         raise RuntimeError(
             "La taille attendue de Fashion-MNIST est différente "
             f"de la taille observée : {len(full_train_dataset)}."
         )
 
-    # Même seed -> même séparation train / validation.
-    split_generator = torch.Generator().manual_seed(seed)
+    # ------------------------------------------------------------
+    # SPLIT TRAIN / VALIDATION
+    # ------------------------------------------------------------
+    #
+    # Cette seed doit rester FIXE entre les différents runs
+    # multi-seed afin que tous les modèles soient comparés sur
+    # exactement les mêmes 6 000 images de validation.
+    # ------------------------------------------------------------
 
-    train_dataset, validation_dataset = random_split(
+    split_generator = (
+        torch.Generator()
+        .manual_seed(
+            resolved_split_seed
+        )
+    )
+
+    (
+        train_dataset,
+        validation_dataset,
+    ) = random_split(
         dataset=full_train_dataset,
         lengths=[
             train_size,
@@ -180,8 +305,20 @@ def create_dataloaders(
         generator=split_generator,
     )
 
-    # Contrôle également l'ordre des batchs d'entraînement.
-    loader_generator = torch.Generator().manual_seed(seed)
+    # ------------------------------------------------------------
+    # ORDRE DES BATCHS D'ENTRAÎNEMENT
+    # ------------------------------------------------------------
+    #
+    # Cette seed fait partie des aléas d'entraînement et peut donc
+    # varier entre les runs multi-seed.
+    # ------------------------------------------------------------
+
+    loader_generator = (
+        torch.Generator()
+        .manual_seed(
+            resolved_loader_seed
+        )
+    )
 
     train_loader = DataLoader(
         dataset=train_dataset,
@@ -202,7 +339,10 @@ def create_dataloaders(
         drop_last=False,
     )
 
-    return train_loader, validation_loader
+    return (
+        train_loader,
+        validation_loader,
+    )
 
 
 # ================================================================
@@ -268,7 +408,9 @@ def train_one_epoch(
 
     processed_samples = 0
 
-    progress_total = len(dataloader)
+    progress_total = len(
+        dataloader
+    )
 
     if max_batches is not None:
         progress_total = min(
@@ -283,11 +425,15 @@ def train_one_epoch(
         leave=False,
     )
 
-    for batch_index, (images, _) in progress_bar:
+    for (
+        batch_index,
+        (images, _),
+    ) in progress_bar:
 
         if (
             max_batches is not None
-            and batch_index >= max_batches
+            and batch_index
+            >= max_batches
         ):
             break
 
@@ -296,17 +442,28 @@ def train_one_epoch(
             non_blocking=True,
         )
 
-        batch_size = images.shape[0]
+        batch_size = (
+            images.shape[0]
+        )
 
         optimizer.zero_grad(
             set_to_none=True,
         )
 
-        reconstruction, mu, logvar, _ = model(
+        (
+            reconstruction,
+            mu,
+            logvar,
+            _,
+        ) = model(
             images
         )
 
-        total_loss, reconstruction_loss, kl_loss = vae_loss(
+        (
+            total_loss,
+            reconstruction_loss,
+            kl_loss,
+        ) = vae_loss(
             reconstruction=reconstruction,
             target=images,
             mu=mu,
@@ -333,19 +490,35 @@ def train_one_epoch(
             * batch_size
         )
 
-        processed_samples += batch_size
+        processed_samples += (
+            batch_size
+        )
 
         progress_bar.set_postfix(
-            total=f"{total_loss.item():.2f}",
-            reconstruction=f"{reconstruction_loss.item():.2f}",
-            kl=f"{kl_loss.item():.2f}",
+            total=(
+                f"{total_loss.item():.2f}"
+            ),
+            reconstruction=(
+                f"{reconstruction_loss.item():.2f}"
+            ),
+            kl=(
+                f"{kl_loss.item():.2f}"
+            ),
         )
 
     return calculate_average_metrics(
-        total_loss_sum=total_loss_sum,
-        reconstruction_loss_sum=reconstruction_loss_sum,
-        kl_loss_sum=kl_loss_sum,
-        processed_samples=processed_samples,
+        total_loss_sum=(
+            total_loss_sum
+        ),
+        reconstruction_loss_sum=(
+            reconstruction_loss_sum
+        ),
+        kl_loss_sum=(
+            kl_loss_sum
+        ),
+        processed_samples=(
+            processed_samples
+        ),
     )
 
 
@@ -376,7 +549,9 @@ def validate_one_epoch(
 
     processed_samples = 0
 
-    progress_total = len(dataloader)
+    progress_total = len(
+        dataloader
+    )
 
     if max_batches is not None:
         progress_total = min(
@@ -391,11 +566,15 @@ def validate_one_epoch(
         leave=False,
     )
 
-    for batch_index, (images, _) in progress_bar:
+    for (
+        batch_index,
+        (images, _),
+    ) in progress_bar:
 
         if (
             max_batches is not None
-            and batch_index >= max_batches
+            and batch_index
+            >= max_batches
         ):
             break
 
@@ -404,13 +583,24 @@ def validate_one_epoch(
             non_blocking=True,
         )
 
-        batch_size = images.shape[0]
+        batch_size = (
+            images.shape[0]
+        )
 
-        reconstruction, mu, logvar, _ = model(
+        (
+            reconstruction,
+            mu,
+            logvar,
+            _,
+        ) = model(
             images
         )
 
-        total_loss, reconstruction_loss, kl_loss = vae_loss(
+        (
+            total_loss,
+            reconstruction_loss,
+            kl_loss,
+        ) = vae_loss(
             reconstruction=reconstruction,
             target=images,
             mu=mu,
@@ -433,13 +623,23 @@ def validate_one_epoch(
             * batch_size
         )
 
-        processed_samples += batch_size
+        processed_samples += (
+            batch_size
+        )
 
     return calculate_average_metrics(
-        total_loss_sum=total_loss_sum,
-        reconstruction_loss_sum=reconstruction_loss_sum,
-        kl_loss_sum=kl_loss_sum,
-        processed_samples=processed_samples,
+        total_loss_sum=(
+            total_loss_sum
+        ),
+        reconstruction_loss_sum=(
+            reconstruction_loss_sum
+        ),
+        kl_loss_sum=(
+            kl_loss_sum
+        ),
+        processed_samples=(
+            processed_samples
+        ),
     )
 
 
@@ -448,7 +648,9 @@ def validate_one_epoch(
 # ================================================================
 
 
-def beta_to_tag(beta: float) -> str:
+def beta_to_tag(
+    beta: float,
+) -> str:
     """
     Transforme beta en texte utilisable dans un nom de fichier.
 
@@ -459,7 +661,13 @@ def beta_to_tag(beta: float) -> str:
     4.0 -> "4"
     """
 
-    return f"{beta:g}".replace(".", "")
+    return (
+        f"{beta:g}"
+        .replace(
+            ".",
+            "",
+        )
+    )
 
 
 def save_checkpoint(
@@ -484,10 +692,16 @@ def save_checkpoint(
         "model_type": "VAE",
         "epoch": epoch,
         "beta": beta,
-        "best_validation_loss": best_validation_loss,
+        "best_validation_loss": (
+            best_validation_loss
+        ),
         "configuration": configuration,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
+        "model_state_dict": (
+            model.state_dict()
+        ),
+        "optimizer_state_dict": (
+            optimizer.state_dict()
+        ),
     }
 
     torch.save(
@@ -502,7 +716,9 @@ def save_checkpoint(
 
 
 def save_history_csv(
-    history: list[dict[str, float]],
+    history: list[
+        dict[str, float]
+    ],
     path: Path,
 ) -> None:
     """
@@ -536,7 +752,9 @@ def save_history_csv(
         )
 
         writer.writeheader()
-        writer.writerows(history)
+        writer.writerows(
+            history
+        )
 
 
 # ================================================================
@@ -563,7 +781,10 @@ def build_default_mlflow_tracking_uri() -> str:
         .as_posix()
     )
 
-    return f"sqlite:///{database_path}"
+    return (
+        f"sqlite:///"
+        f"{database_path}"
+    )
 
 
 def configure_mlflow(
@@ -603,7 +824,9 @@ def configure_mlflow(
         if experiment is None:
 
             mlflow.create_experiment(
-                name=experiment_name,
+                name=(
+                    experiment_name
+                ),
                 artifact_location=(
                     MLFLOW_ARTIFACT_DIR
                     .resolve()
@@ -617,7 +840,9 @@ def configure_mlflow(
 
     else:
 
-        resolved_tracking_uri = tracking_uri
+        resolved_tracking_uri = (
+            tracking_uri
+        )
 
         mlflow.set_tracking_uri(
             resolved_tracking_uri
@@ -649,35 +874,81 @@ def log_mlflow_parameters(
         "model_type": "VAE",
         "beta": args.beta,
 
-        # Nouveau nom méthodologique :
-        # il s'agit du nombre MAXIMAL d'époques.
-        "max_epochs": args.max_epochs,
+        # Nombre maximal d'époques.
+        "max_epochs": (
+            args.max_epochs
+        ),
 
-        "batch_size": args.batch_size,
-        "latent_dim": args.latent_dim,
-        "hidden_dim": args.hidden_dim,
-        "learning_rate": args.learning_rate,
+        "batch_size": (
+            args.batch_size
+        ),
+        "latent_dim": (
+            args.latent_dim
+        ),
+        "hidden_dim": (
+            args.hidden_dim
+        ),
+        "learning_rate": (
+            args.learning_rate
+        ),
+
+        # --------------------------------------------------------
+        # REPRODUCTIBILITÉ
+        # --------------------------------------------------------
+        #
+        # "seed" est conservé pour la compatibilité avec les anciens
+        # runs et anciens outils.
+        #
+        # "training_seed" rend désormais son rôle explicite.
+        #
+        # "split_seed" identifie la séparation train / validation.
+        # --------------------------------------------------------
         "seed": args.seed,
-        "num_workers": args.num_workers,
-        "device": str(device),
+        "training_seed": (
+            args.seed
+        ),
+        "split_seed": (
+            args.split_seed
+        ),
+
+        "num_workers": (
+            args.num_workers
+        ),
+        "device": str(
+            device
+        ),
 
         # Paramètres de l'early stopping.
         "early_stopping": True,
-        "patience": args.patience,
-        "min_delta": args.min_delta,
-        "early_stopping_monitor": "validation_total",
+        "patience": (
+            args.patience
+        ),
+        "min_delta": (
+            args.min_delta
+        ),
+        "early_stopping_monitor": (
+            "validation_total"
+        ),
 
-        "smoke_test": is_smoke_test,
+        "smoke_test": (
+            is_smoke_test
+        ),
 
         "max_train_batches": (
             args.max_train_batches
-            if args.max_train_batches is not None
+            if (
+                args.max_train_batches
+                is not None
+            )
             else "None"
         ),
 
         "max_val_batches": (
             args.max_val_batches
-            if args.max_val_batches is not None
+            if (
+                args.max_val_batches
+                is not None
+            )
             else "None"
         ),
     }
@@ -690,9 +961,15 @@ def log_mlflow_parameters(
         {
             "dataset": "Fashion-MNIST",
             "model_type": "VAE",
-            "python_version": platform.python_version(),
-            "torch_version": torch.__version__,
-            "mlflow_version": mlflow.__version__,
+            "python_version": (
+                platform.python_version()
+            ),
+            "torch_version": (
+                torch.__version__
+            ),
+            "mlflow_version": (
+                mlflow.__version__
+            ),
         }
     )
 
@@ -704,8 +981,14 @@ def log_mlflow_parameters(
 
 def log_epoch_to_mlflow(
     epoch: int,
-    train_metrics: dict[str, float],
-    validation_metrics: dict[str, float],
+    train_metrics: dict[
+        str,
+        float,
+    ],
+    validation_metrics: dict[
+        str,
+        float,
+    ],
     best_validation_loss: float,
     epochs_without_improvement: int,
     is_improvement: bool,
@@ -719,35 +1002,49 @@ def log_epoch_to_mlflow(
     mlflow.log_metrics(
         {
             "train_total": (
-                train_metrics["total"]
+                train_metrics[
+                    "total"
+                ]
             ),
 
             "train_reconstruction": (
-                train_metrics["reconstruction"]
+                train_metrics[
+                    "reconstruction"
+                ]
             ),
 
             "train_kl": (
-                train_metrics["kl"]
+                train_metrics[
+                    "kl"
+                ]
             ),
 
             "validation_total": (
-                validation_metrics["total"]
+                validation_metrics[
+                    "total"
+                ]
             ),
 
             "validation_reconstruction": (
-                validation_metrics["reconstruction"]
+                validation_metrics[
+                    "reconstruction"
+                ]
             ),
 
             "validation_kl": (
-                validation_metrics["kl"]
+                validation_metrics[
+                    "kl"
+                ]
             ),
 
             "best_validation_loss_so_far": (
                 best_validation_loss
             ),
 
-            "epochs_without_improvement": float(
-                epochs_without_improvement
+            "epochs_without_improvement": (
+                float(
+                    epochs_without_improvement
+                )
             ),
 
             "is_improvement": (
@@ -863,12 +1160,33 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ------------------------------------------------------------
+    # SEED D'ENTRAÎNEMENT
+    # ------------------------------------------------------------
+
     parser.add_argument(
         "--seed",
         type=int,
         default=42,
         help=(
-            "Graine aléatoire. "
+            "Seed d'entraînement : initialisation du modèle, "
+            "ordre des batchs et autres aléas d'entraînement. "
+            "Valeur par défaut : 42."
+        ),
+    )
+
+    # ------------------------------------------------------------
+    # SEED DU SPLIT TRAIN / VALIDATION
+    # ------------------------------------------------------------
+
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=42,
+        help=(
+            "Seed utilisée uniquement pour la séparation fixe "
+            "54 000 train / 6 000 validation. "
+            "Pour les expériences multi-seed, conserver 42. "
             "Valeur par défaut : 42."
         ),
     )
@@ -1014,16 +1332,20 @@ def validate_arguments(
         )
 
     if (
-        args.max_train_batches is not None
-        and args.max_train_batches <= 0
+        args.max_train_batches
+        is not None
+        and args.max_train_batches
+        <= 0
     ):
         raise ValueError(
             "max-train-batches doit être strictement positif."
         )
 
     if (
-        args.max_val_batches is not None
-        and args.max_val_batches <= 0
+        args.max_val_batches
+        is not None
+        and args.max_val_batches
+        <= 0
     ):
         raise ValueError(
             "max-val-batches doit être strictement positif."
@@ -1040,12 +1362,24 @@ def main() -> None:
     Point d'entrée principal de l'entraînement du VAE.
     """
 
-    parser = build_argument_parser()
-    args = parser.parse_args()
+    parser = (
+        build_argument_parser()
+    )
+
+    args = (
+        parser.parse_args()
+    )
 
     validate_arguments(
         args
     )
+
+    # ------------------------------------------------------------
+    # SEED D'ENTRAÎNEMENT
+    # ------------------------------------------------------------
+    #
+    # Cette seed peut varier entre les runs multi-seed.
+    # ------------------------------------------------------------
 
     set_random_seed(
         args.seed
@@ -1056,44 +1390,92 @@ def main() -> None:
     )
 
     pin_memory = (
-        device.type == "cuda"
+        device.type
+        == "cuda"
     )
 
-    train_loader, validation_loader = create_dataloaders(
-        batch_size=args.batch_size,
-        seed=args.seed,
-        num_workers=args.num_workers,
-        pin_memory=pin_memory,
+    # ------------------------------------------------------------
+    # DATASETS ET DATALOADERS
+    # ------------------------------------------------------------
+    #
+    # split_seed :
+    #   reste fixe pour garantir exactement le même split.
+    #
+    # loader_seed :
+    #   suit args.seed et varie avec l'aléa d'entraînement.
+    #
+    # seed :
+    #   reste transmis pour préserver la rétrocompatibilité de
+    #   create_dataloaders().
+    # ------------------------------------------------------------
+
+    (
+        train_loader,
+        validation_loader,
+    ) = create_dataloaders(
+        batch_size=(
+            args.batch_size
+        ),
+        seed=(
+            args.seed
+        ),
+        num_workers=(
+            args.num_workers
+        ),
+        pin_memory=(
+            pin_memory
+        ),
+        split_seed=(
+            args.split_seed
+        ),
+        loader_seed=(
+            args.seed
+        ),
     )
 
     model = VAE(
-        latent_dim=args.latent_dim,
-        hidden_dim=args.hidden_dim,
-    ).to(device)
+        latent_dim=(
+            args.latent_dim
+        ),
+        hidden_dim=(
+            args.hidden_dim
+        ),
+    ).to(
+        device
+    )
 
     optimizer = Adam(
         model.parameters(),
-        lr=args.learning_rate,
+        lr=(
+            args.learning_rate
+        ),
     )
 
     # Une limitation en batchs indique un smoke test.
     is_smoke_test = (
-        args.max_train_batches is not None
-        or args.max_val_batches is not None
+        args.max_train_batches
+        is not None
+        or args.max_val_batches
+        is not None
     )
 
     if args.run_name is not None:
 
-        run_name = args.run_name
+        run_name = (
+            args.run_name
+        )
 
     else:
 
         run_name = (
-            f"vae_beta_{beta_to_tag(args.beta)}"
+            f"vae_beta_"
+            f"{beta_to_tag(args.beta)}"
         )
 
         if is_smoke_test:
-            run_name += "_smoke"
+            run_name += (
+                "_smoke"
+            )
 
     checkpoint_path = (
         CHECKPOINT_DIR
@@ -1105,27 +1487,71 @@ def main() -> None:
         / f"{run_name}_history.csv"
     )
 
-    # Configuration conservée dans le checkpoint.
+    # ------------------------------------------------------------
+    # CONFIGURATION DU CHECKPOINT
+    # ------------------------------------------------------------
     #
     # "epochs" reste présent pour préserver la compatibilité avec
-    # les anciens scripts qui pourraient lire cette clé.
+    # les anciens scripts.
+    #
+    # "seed" reste également présent pour compatibilité.
+    #
+    # Les nouvelles clés rendent explicite la distinction entre
+    # training_seed et split_seed.
+    # ------------------------------------------------------------
+
     configuration = {
         "dataset": "Fashion-MNIST",
-        "beta": args.beta,
+        "beta": (
+            args.beta
+        ),
 
-        "epochs": args.max_epochs,
-        "max_epochs": args.max_epochs,
+        "epochs": (
+            args.max_epochs
+        ),
+        "max_epochs": (
+            args.max_epochs
+        ),
 
-        "patience": args.patience,
-        "min_delta": args.min_delta,
+        "patience": (
+            args.patience
+        ),
+        "min_delta": (
+            args.min_delta
+        ),
 
-        "batch_size": args.batch_size,
-        "latent_dim": args.latent_dim,
-        "hidden_dim": args.hidden_dim,
-        "learning_rate": args.learning_rate,
-        "seed": args.seed,
-        "num_workers": args.num_workers,
-        "device": str(device),
+        "batch_size": (
+            args.batch_size
+        ),
+        "latent_dim": (
+            args.latent_dim
+        ),
+        "hidden_dim": (
+            args.hidden_dim
+        ),
+        "learning_rate": (
+            args.learning_rate
+        ),
+
+        # Compatibilité avec les anciens checkpoints.
+        "seed": (
+            args.seed
+        ),
+
+        # Nouvelles clés explicites.
+        "training_seed": (
+            args.seed
+        ),
+        "split_seed": (
+            args.split_seed
+        ),
+
+        "num_workers": (
+            args.num_workers
+        ),
+        "device": str(
+            device
+        ),
     }
 
     tracking_uri = configure_mlflow(
@@ -1137,12 +1563,18 @@ def main() -> None:
         ),
     )
 
-    print("=" * 74)
+    print(
+        "=" * 74
+    )
+
     print(
         "ENTRAÎNEMENT DU VAE SUR "
         "FASHION-MNIST + MLFLOW + EARLY STOPPING"
     )
-    print("=" * 74)
+
+    print(
+        "=" * 74
+    )
 
     print(
         f"Appareil utilisé            : "
@@ -1194,6 +1626,20 @@ def main() -> None:
         f"{args.learning_rate}"
     )
 
+    # ------------------------------------------------------------
+    # AFFICHAGE DES DEUX SEEDS
+    # ------------------------------------------------------------
+
+    print(
+        f"Seed d'entraînement         : "
+        f"{args.seed}"
+    )
+
+    print(
+        f"Seed du split               : "
+        f"{args.split_seed}"
+    )
+
     print(
         f"Nom du run MLflow           : "
         f"{run_name}"
@@ -1209,7 +1655,10 @@ def main() -> None:
         f"{tracking_uri}"
     )
 
-    if args.mlflow_tracking_uri is None:
+    if (
+        args.mlflow_tracking_uri
+        is None
+    ):
 
         print(
             f"Base SQLite MLflow          : "
@@ -1227,15 +1676,17 @@ def main() -> None:
             "TEST RAPIDE"
         )
 
-    print("=" * 74)
+    print(
+        "=" * 74
+    )
 
     history: list[
         dict[str, float]
     ] = []
 
     # Meilleure validation rencontrée selon le critère défini.
-    best_validation_loss = float(
-        "inf"
+    best_validation_loss = (
+        float("inf")
     )
 
     best_epoch = 0
@@ -1261,12 +1712,16 @@ def main() -> None:
             f"{active_run.info.run_id}"
         )
 
-        print("=" * 74)
+        print(
+            "=" * 74
+        )
 
         log_mlflow_parameters(
             args=args,
             device=device,
-            is_smoke_test=is_smoke_test,
+            is_smoke_test=(
+                is_smoke_test
+            ),
         )
 
         for epoch in range(
@@ -1278,33 +1733,49 @@ def main() -> None:
             # ENTRAÎNEMENT
             # ====================================================
 
-            train_metrics = train_one_epoch(
-                model=model,
-                dataloader=train_loader,
-                optimizer=optimizer,
-                device=device,
-                beta=args.beta,
-                max_batches=(
-                    args.max_train_batches
-                ),
+            train_metrics = (
+                train_one_epoch(
+                    model=model,
+                    dataloader=(
+                        train_loader
+                    ),
+                    optimizer=(
+                        optimizer
+                    ),
+                    device=device,
+                    beta=(
+                        args.beta
+                    ),
+                    max_batches=(
+                        args.max_train_batches
+                    ),
+                )
             )
 
             # ====================================================
             # VALIDATION
             # ====================================================
 
-            validation_metrics = validate_one_epoch(
-                model=model,
-                dataloader=validation_loader,
-                device=device,
-                beta=args.beta,
-                max_batches=(
-                    args.max_val_batches
-                ),
+            validation_metrics = (
+                validate_one_epoch(
+                    model=model,
+                    dataloader=(
+                        validation_loader
+                    ),
+                    device=device,
+                    beta=(
+                        args.beta
+                    ),
+                    max_batches=(
+                        args.max_val_batches
+                    ),
+                )
             )
 
             current_validation_loss = (
-                validation_metrics["total"]
+                validation_metrics[
+                    "total"
+                ]
             )
 
             # ====================================================
@@ -1315,7 +1786,9 @@ def main() -> None:
                 "epoch": epoch,
 
                 "train_total": (
-                    train_metrics["total"]
+                    train_metrics[
+                        "total"
+                    ]
                 ),
 
                 "train_reconstruction": (
@@ -1325,11 +1798,15 @@ def main() -> None:
                 ),
 
                 "train_kl": (
-                    train_metrics["kl"]
+                    train_metrics[
+                        "kl"
+                    ]
                 ),
 
                 "validation_total": (
-                    validation_metrics["total"]
+                    validation_metrics[
+                        "total"
+                    ]
                 ),
 
                 "validation_reconstruction": (
@@ -1339,7 +1816,9 @@ def main() -> None:
                 ),
 
                 "validation_kl": (
-                    validation_metrics["kl"]
+                    validation_metrics[
+                        "kl"
+                    ]
                 ),
             }
 
@@ -1349,7 +1828,8 @@ def main() -> None:
 
             print(
                 f"Époque "
-                f"{epoch:03d}/{args.max_epochs:03d} | "
+                f"{epoch:03d}/"
+                f"{args.max_epochs:03d} | "
 
                 f"Train total="
                 f"{train_metrics['total']:.4f} | "
@@ -1394,21 +1874,31 @@ def main() -> None:
                     current_validation_loss
                 )
 
-                best_epoch = epoch
+                best_epoch = (
+                    epoch
+                )
 
                 # Une amélioration remet le compteur à zéro.
                 epochs_without_improvement = 0
 
                 save_checkpoint(
-                    path=checkpoint_path,
+                    path=(
+                        checkpoint_path
+                    ),
                     model=model,
-                    optimizer=optimizer,
+                    optimizer=(
+                        optimizer
+                    ),
                     epoch=epoch,
-                    beta=args.beta,
+                    beta=(
+                        args.beta
+                    ),
                     best_validation_loss=(
                         best_validation_loss
                     ),
-                    configuration=configuration,
+                    configuration=(
+                        configuration
+                    ),
                 )
 
                 print(
@@ -1418,7 +1908,9 @@ def main() -> None:
 
             else:
 
-                epochs_without_improvement += 1
+                epochs_without_improvement += (
+                    1
+                )
 
                 print(
                     "  -> Pas d'amélioration suffisante. "
@@ -1433,7 +1925,9 @@ def main() -> None:
 
             log_epoch_to_mlflow(
                 epoch=epoch,
-                train_metrics=train_metrics,
+                train_metrics=(
+                    train_metrics
+                ),
                 validation_metrics=(
                     validation_metrics
                 ),
@@ -1455,8 +1949,12 @@ def main() -> None:
             # Le CSV est sauvegardé avant de tester l'arrêt,
             # afin que la dernière époque soit toujours conservée.
             save_history_csv(
-                history=history,
-                path=history_path,
+                history=(
+                    history
+                ),
+                path=(
+                    history_path
+                ),
             )
 
             # ====================================================
@@ -1468,10 +1966,17 @@ def main() -> None:
                 >= args.patience
             ):
 
-                early_stopping_triggered = True
-                stopped_epoch = epoch
+                early_stopping_triggered = (
+                    True
+                )
 
-                print("=" * 74)
+                stopped_epoch = (
+                    epoch
+                )
+
+                print(
+                    "=" * 74
+                )
 
                 print(
                     "EARLY STOPPING DÉCLENCHÉ"
@@ -1498,13 +2003,17 @@ def main() -> None:
                     f"{best_validation_loss:.4f}"
                 )
 
-                print("=" * 74)
+                print(
+                    "=" * 74
+                )
 
                 break
 
         # Si early stopping n'a pas été déclenché,
         # l'entraînement s'est terminé à max_epochs.
-        if not early_stopping_triggered:
+        if (
+            not early_stopping_triggered
+        ):
             stopped_epoch = len(
                 history
             )
@@ -1542,8 +2051,10 @@ def main() -> None:
                     else 0.0
                 ),
 
-                "final_epochs_without_improvement": float(
-                    epochs_without_improvement
+                "final_epochs_without_improvement": (
+                    float(
+                        epochs_without_improvement
+                    )
                 ),
 
                 "training_duration_seconds": (
@@ -1559,14 +2070,20 @@ def main() -> None:
         if checkpoint_path.exists():
 
             mlflow.log_artifact(
-                str(checkpoint_path),
-                artifact_path="checkpoints",
+                str(
+                    checkpoint_path
+                ),
+                artifact_path=(
+                    "checkpoints"
+                ),
             )
 
         if history_path.exists():
 
             mlflow.log_artifact(
-                str(history_path),
+                str(
+                    history_path
+                ),
                 artifact_path=(
                     "training_histories"
                 ),
@@ -1610,11 +2127,17 @@ def main() -> None:
         # AFFICHAGE FINAL
         # ========================================================
 
-        print("=" * 74)
+        print(
+            "=" * 74
+        )
+
         print(
             "ENTRAÎNEMENT TERMINÉ"
         )
-        print("=" * 74)
+
+        print(
+            "=" * 74
+        )
 
         print(
             f"MLflow run ID               : "
@@ -1647,6 +2170,16 @@ def main() -> None:
         )
 
         print(
+            f"Seed d'entraînement         : "
+            f"{args.seed}"
+        )
+
+        print(
+            f"Seed du split               : "
+            f"{args.split_seed}"
+        )
+
+        print(
             f"Durée d'entraînement        : "
             f"{training_duration_seconds:.2f} secondes"
         )
@@ -1666,7 +2199,10 @@ def main() -> None:
             f"{tracking_uri}"
         )
 
-        if args.mlflow_tracking_uri is None:
+        if (
+            args.mlflow_tracking_uri
+            is None
+        ):
 
             print(
                 f"Base SQLite MLflow          : "
@@ -1678,7 +2214,9 @@ def main() -> None:
                 f"{MLFLOW_ARTIFACT_DIR}"
             )
 
-        print("=" * 74)
+        print(
+            "=" * 74
+        )
 
 
 if __name__ == "__main__":
