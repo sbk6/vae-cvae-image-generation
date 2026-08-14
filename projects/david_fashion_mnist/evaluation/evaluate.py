@@ -20,11 +20,18 @@ le mode par défaut est :
 
 Les métriques calculées sont :
 
-    - loss totale du beta-VAE / beta-CVAE ;
-    - reconstruction BCE ;
+    - loss totale du beta-VAE / beta-CVAE, avec un échantillon
+      Monte-Carlo z ~ q(z|x), comme pendant l'entraînement ;
+    - reconstruction BCE avec ce même échantillon ;
     - divergence KL ;
-    - MSE ;
-    - SSIM.
+    - reconstruction BCE déterministe avec z = mu ;
+    - MSE déterministe avec z = mu ;
+    - SSIM déterministe avec z = mu.
+
+Pour les métriques de fidélité visuelle (BCE déterministe, MSE et SSIM),
+la reconstruction utilise z = mu. Cela supprime le bruit dû à
+l'échantillonnage latent et rend les comparaisons entre checkpoints
+reproductibles.
 
 Le script sauvegarde également :
 
@@ -145,6 +152,8 @@ def create_validation_loader(
     _, validation_loader = create_dataloaders(
         batch_size=batch_size,
         seed=split_seed,
+        split_seed=split_seed,
+        loader_seed=split_seed,
         num_workers=num_workers,
         pin_memory=pin_memory,
     )
@@ -607,6 +616,51 @@ def calculate_ssim_per_image(
 
 
 # ================================================================
+# RECONSTRUCTION DÉTERMINISTE
+# ================================================================
+
+
+def decode_from_mu(
+    model: nn.Module,
+    model_type: str,
+    mu: torch.Tensor,
+    labels: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Reconstruit les images à partir de la moyenne latente mu.
+
+    Cette reconstruction est déterministe :
+
+        z = mu
+
+    Elle est utilisée pour les métriques de fidélité visuelle
+    (BCE déterministe, MSE et SSIM), ainsi que pour les exemples
+    de reconstruction sauvegardés.
+
+    La loss ELBO reste calculée avec un échantillon z ~ q(z|x),
+    afin de rester cohérente avec l'objectif d'entraînement.
+    """
+
+    if model_type == "VAE":
+
+        return model.decode(
+            mu
+        )
+
+    if model_type == "CVAE":
+
+        return model.decode(
+            mu,
+            labels,
+        )
+
+    raise ValueError(
+        "Type de modèle non pris en charge : "
+        f"{model_type}."
+    )
+
+
+# ================================================================
 # ÉVALUATION QUANTITATIVE
 # ================================================================
 
@@ -625,12 +679,17 @@ def evaluate_model(
 
     Métriques retournées :
 
-        - total ;
-        - reconstruction BCE ;
+        - total ELBO estimé avec un échantillon z ~ q(z|x) ;
+        - reconstruction BCE avec ce même échantillon ;
         - KL ;
-        - MSE ;
-        - SSIM ;
+        - reconstruction BCE déterministe avec z = mu ;
+        - MSE déterministe avec z = mu ;
+        - SSIM déterministe avec z = mu ;
         - nombre d'images traitées.
+
+    Pour rendre la comparaison des métriques de reconstruction
+    reproductible, BCE déterministe, MSE et SSIM sont calculés
+    à partir de z = mu.
     """
 
     model.eval()
@@ -638,6 +697,8 @@ def evaluate_model(
     total_loss_sum = 0.0
     reconstruction_loss_sum = 0.0
     kl_loss_sum = 0.0
+
+    deterministic_reconstruction_bce_sum = 0.0
 
     mse_sum = 0.0
     ssim_sum = 0.0
@@ -693,19 +754,25 @@ def evaluate_model(
 
         if model_type == "VAE":
 
-            reconstruction, mu, logvar, _ = (
-                model(
-                    images
-                )
+            (
+                sampled_reconstruction,
+                mu,
+                logvar,
+                _,
+            ) = model(
+                images
             )
 
         elif model_type == "CVAE":
 
-            reconstruction, mu, logvar, _ = (
-                model(
-                    images,
-                    labels,
-                )
+            (
+                sampled_reconstruction,
+                mu,
+                logvar,
+                _,
+            ) = model(
+                images,
+                labels,
             )
 
         else:
@@ -724,7 +791,7 @@ def evaluate_model(
             reconstruction_loss,
             kl_loss,
         ) = vae_loss(
-            reconstruction=reconstruction,
+            reconstruction=sampled_reconstruction,
             target=images,
             mu=mu,
             logvar=logvar,
@@ -747,13 +814,43 @@ def evaluate_model(
         )
 
         # --------------------------------------------------------
-        # MSE
+        # RECONSTRUCTION DÉTERMINISTE : z = mu
+        # --------------------------------------------------------
+
+        deterministic_reconstruction = decode_from_mu(
+            model=model,
+            model_type=model_type,
+            mu=mu,
+            labels=labels,
+        )
+
+        # BCE déterministe, somme des pixels par image puis
+        # accumulation sur l'ensemble évalué.
+        deterministic_bce_per_image = (
+            F.binary_cross_entropy(
+                deterministic_reconstruction,
+                images,
+                reduction="none",
+            )
+            .sum(
+                dim=(1, 2, 3)
+            )
+        )
+
+        deterministic_reconstruction_bce_sum += (
+            deterministic_bce_per_image
+            .sum()
+            .item()
+        )
+
+        # --------------------------------------------------------
+        # MSE DÉTERMINISTE
         # --------------------------------------------------------
 
         # MSE moyen par pixel pour chacune des images.
         mse_per_image = (
             (
-                reconstruction
+                deterministic_reconstruction
                 - images
             )
             ** 2
@@ -774,7 +871,7 @@ def evaluate_model(
         ssim_per_image = (
             calculate_ssim_per_image(
                 reconstruction=(
-                    reconstruction
+                    deterministic_reconstruction
                 ),
                 target=images,
                 window_size=11,
@@ -816,6 +913,11 @@ def evaluate_model(
             / processed_samples
         ),
 
+        "deterministic_reconstruction_bce": (
+            deterministic_reconstruction_bce_sum
+            / processed_samples
+        ),
+
         "mse": (
             mse_sum
             / processed_samples
@@ -853,7 +955,9 @@ def save_reconstruction_examples(
         images originales.
 
     Deuxième ligne :
-        images reconstruites.
+        images reconstruites avec z = mu.
+
+    Les reconstructions sont donc déterministes.
     """
 
     if num_images <= 0:
@@ -886,19 +990,15 @@ def save_reconstruction_examples(
 
     if model_type == "VAE":
 
-        reconstructions, _, _, _ = (
-            model(
-                images
-            )
+        _, mu, _, _ = model(
+            images
         )
 
     elif model_type == "CVAE":
 
-        reconstructions, _, _, _ = (
-            model(
-                images,
-                labels,
-            )
+        _, mu, _, _ = model(
+            images,
+            labels,
         )
 
     else:
@@ -907,6 +1007,13 @@ def save_reconstruction_examples(
             "Type de modèle non pris en charge : "
             f"{model_type}."
         )
+
+    reconstructions = decode_from_mu(
+        model=model,
+        model_type=model_type,
+        mu=mu,
+        labels=labels,
+    )
 
     comparison = torch.cat(
         tensors=(
@@ -1049,13 +1156,18 @@ def save_metrics_csv(
         "checkpoint",
         "model_type",
         "beta",
+        "training_seed",
+        "split_seed_protocol",
+        "checkpoint_split_seed",
+        "evaluation_seed",
         "best_epoch",
         "best_validation_loss",
-        "evaluation_total",
-        "evaluation_reconstruction_bce",
+        "evaluation_total_sampled",
+        "evaluation_reconstruction_bce_sampled",
         "evaluation_kl",
-        "evaluation_mse",
-        "evaluation_ssim",
+        "evaluation_reconstruction_bce_deterministic",
+        "evaluation_mse_deterministic",
+        "evaluation_ssim_deterministic",
         "processed_images",
     ]
 
@@ -1201,6 +1313,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--output-csv",
+        type=str,
+        default=None,
+        help=(
+            "Chemin optionnel du CSV de sortie. "
+            "Un chemin relatif est interprété depuis "
+            "la racine du projet. Sans valeur, le fichier "
+            "par défaut du split validation/test est utilisé."
+        ),
+    )
+
+    parser.add_argument(
         "--checkpoints",
         nargs="+",
         default=[
@@ -1296,6 +1420,29 @@ def resolve_checkpoint_path(
     return path.resolve()
 
 
+def resolve_output_path(
+    path_text: str,
+) -> Path:
+    """
+    Convertit un chemin de sortie en chemin absolu.
+
+    Un chemin relatif est interprété depuis la racine du projet.
+    """
+
+    path = Path(
+        path_text
+    )
+
+    if not path.is_absolute():
+
+        path = (
+            PROJECT_ROOT
+            / path
+        )
+
+    return path.resolve()
+
+
 # ================================================================
 # PROGRAMME PRINCIPAL
 # ================================================================
@@ -1334,7 +1481,13 @@ def main() -> None:
         pin_memory=pin_memory,
     )
 
-    if args.split == "validation":
+    if args.output_csv is not None:
+
+        metrics_path = resolve_output_path(
+            args.output_csv
+        )
+
+    elif args.split == "validation":
 
         metrics_path = (
             VALIDATION_METRICS_PATH
@@ -1428,6 +1581,14 @@ def main() -> None:
             checkpoint["beta"]
         )
 
+        # Même seed d'évaluation pour chaque checkpoint.
+        # Cela rend l'estimation Monte-Carlo de l'ELBO
+        # reproductible et utilise les mêmes tirages epsilon
+        # dans le même ordre pour tous les modèles.
+        set_random_seed(
+            args.seed
+        )
+
         metrics = evaluate_model(
             model=model,
             model_type=model_type,
@@ -1469,6 +1630,12 @@ def main() -> None:
             ),
         )
 
+        # Réinitialisation avant la génération qualitative :
+        # chaque checkpoint reçoit le même seed de génération.
+        set_random_seed(
+            args.seed
+        )
+
         save_generation_examples(
             model=model,
             model_type=model_type,
@@ -1479,6 +1646,23 @@ def main() -> None:
             samples_per_class=(
                 args.samples_per_class
             ),
+        )
+
+        configuration = checkpoint[
+            "configuration"
+        ]
+
+        training_seed = configuration.get(
+            "training_seed",
+            configuration.get(
+                "seed"
+            ),
+        )
+
+        checkpoint_split_seed = (
+            configuration.get(
+                "split_seed"
+            )
         )
 
         result_row = {
@@ -1498,6 +1682,26 @@ def main() -> None:
                 beta
             ),
 
+            "training_seed": (
+                training_seed
+            ),
+
+            "split_seed_protocol": (
+                args.split_seed
+                if args.split == "validation"
+                else ""
+            ),
+
+            "checkpoint_split_seed": (
+                checkpoint_split_seed
+                if checkpoint_split_seed is not None
+                else ""
+            ),
+
+            "evaluation_seed": (
+                args.seed
+            ),
+
             "best_epoch": (
                 checkpoint["epoch"]
             ),
@@ -1508,11 +1712,11 @@ def main() -> None:
                 ]
             ),
 
-            "evaluation_total": (
+            "evaluation_total_sampled": (
                 metrics["total"]
             ),
 
-            "evaluation_reconstruction_bce": (
+            "evaluation_reconstruction_bce_sampled": (
                 metrics["reconstruction"]
             ),
 
@@ -1520,11 +1724,17 @@ def main() -> None:
                 metrics["kl"]
             ),
 
-            "evaluation_mse": (
+            "evaluation_reconstruction_bce_deterministic": (
+                metrics[
+                    "deterministic_reconstruction_bce"
+                ]
+            ),
+
+            "evaluation_mse_deterministic": (
                 metrics["mse"]
             ),
 
-            "evaluation_ssim": (
+            "evaluation_ssim_deterministic": (
                 metrics["ssim"]
             ),
 
@@ -1560,12 +1770,12 @@ def main() -> None:
         )
 
         print(
-            f"Loss totale                : "
+            f"Loss totale (échantillonnée): "
             f"{metrics['total']:.4f}"
         )
 
         print(
-            f"Reconstruction BCE         : "
+            f"BCE (échantillonnée)       : "
             f"{metrics['reconstruction']:.4f}"
         )
 
@@ -1575,12 +1785,17 @@ def main() -> None:
         )
 
         print(
-            f"MSE                        : "
+            f"BCE déterministe (z=mu)    : "
+            f"{metrics['deterministic_reconstruction_bce']:.4f}"
+        )
+
+        print(
+            f"MSE déterministe (z=mu)    : "
             f"{metrics['mse']:.6f}"
         )
 
         print(
-            f"SSIM                       : "
+            f"SSIM déterministe (z=mu)   : "
             f"{metrics['ssim']:.6f}"
         )
 
