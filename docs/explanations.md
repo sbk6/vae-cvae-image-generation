@@ -1,6 +1,6 @@
-> **Note** : ce document date de la séance précédente et contient des chiffres obtenus en mode "smoke-test" (entraînement très court), pas des résultats finaux. Pour les résultats à jour (vrais entraînements, ablation β, comparaison VAE/CVAE), voir le [README.md](../README.md) à la racine du projet.
-
 # Documentation du projet — Explications détaillées (français)
+
+> Document technique complémentaire au [README.md](../README.md). Le README est le document de présentation (résultats, interprétation, difficultés) ; ce document explique le fonctionnement du code plus en détail et sert de référence pour l'exécuter soi-même.
 
 ## 1. Objectif du projet
 Ce projet implémente des modèles de type Variational Autoencoder (VAE) et Conditional VAE (CVAE) en PyTorch, avec une approche :
@@ -8,29 +8,38 @@ Ce projet implémente des modèles de type Variational Autoencoder (VAE) et Cond
 - reproductible (seed propagée partout),
 - dépendances minimales.
 
-But concret réalisé : entraîner un VAE/CVAE court sur MNIST en smoke-test et générer des planches d'images (grilles) montrant des échantillons conditionnés.
+But concret réalisé à ce stade : entraîner un VAE et un CVAE **complets** (10 epochs, données complètes, pas un simple smoke-test) sur MNIST, mener une étude d'ablation sur le poids `beta`, visualiser l'espace latent, produire une interpolation, et comparer quantitativement les deux modèles.
 
 ## 2. Ce qui a été fait (liste "terre à terre")
-- Création de l'arborescence du projet (`src/`, `scripts/`, `configs/`, `tests/`, `reports/`).
-- Implémentation d'un chargeur de données MNIST générique (`src/data/datasets.py`).
+- Arborescence du projet (`src/`, `scripts/`, `configs/`, `tests/`, `reports/`).
+- Chargeur de données MNIST générique (`src/data/datasets.py`), avec support d'un sous-échantillonnage optionnel du train set (`dataset.train_subset`) utilisé pour accélérer l'étude d'ablation.
 - Implémentation d'un `VAE` (`src/models/vae.py`) et d'un `CVAE` (`src/models/cvae.py`).
-- Écriture de la perte ELBO analytique (reconstruction + KL) dans `src/losses/elbo.py`.
-- Boucle d'entraînement générique et gestion du mode conditionné (`src/training/trainer.py`).
-- CLI d'entraînement (`src/training/train.py`) et script de génération d'une grille de samples conditionnés (`scripts/generate_cvae_grid.py`).
-- Tests unitaires basiques pour valider formes et comportements (`tests/`).
-- Génération de figures de contrôle dans `reports/figures/` (réelles et samples CVAE).
-- Initialisation d'un dépôt Git local et commit des changements sur la branche `feature/sylvain-mnist-core`.
+- Perte ELBO analytique (reconstruction + KL) dans `src/losses/elbo.py`.
+- Boucle d'entraînement générique et gestion du mode conditionné (`src/training/trainer.py`), avec un dossier de sortie dédié par expérience (`training.output_dir`) pour éviter qu'un entraînement en écrase un autre.
+- CLI d'entraînement unique (`src/training/train.py`) qui instancie un VAE ou un CVAE selon `model.type` dans le YAML.
+- Script d'étude d'ablation (`scripts/run_ablation.py`) : entraîne plusieurs VAE avec des valeurs de `beta` différentes, produit un tableau Markdown (`docs/RESULTATS.md`) et une courbe.
+- Visualisation de l'espace latent en 2D par t-SNE (`src/visualization/latent.py`).
+- Interpolation entre deux exemples dans l'espace latent (`src/visualization/interpolation.py`).
+- Scripts de génération de grilles à partir d'un modèle **déjà entraîné** (`scripts/generate_cvae_grid.py`, `scripts/generate_vae_recon_grid.py`) — ils ne réentraînent plus le modèle à chaque appel.
+- Script de comparaison quantitative VAE vs CVAE (`scripts/evaluate.py`), avec une mesure de contrôlabilité pour le CVAE.
+- Tests unitaires (8 tests, tous verts) pour valider les formes et comportements de base.
 
 ## 3. Arborescence critique (fichiers principaux)
-- `configs/` : fichiers YAML décrivant datasets et training (ex. `mnist_vae.yaml`, `mnist_cvae.yaml`).
-- `src/data/datasets.py` : construction des dataloaders.
+- `configs/mnist_vae.yaml`, `configs/mnist_cvae.yaml` : configuration des modèles principaux (10 epochs, données complètes, `beta=1.0`).
+- `configs/ablation_beta.yaml` : configuration de l'étude d'ablation (3 valeurs de `beta`, 6 epochs, sous-ensemble de 12 000 images).
+- `src/data/datasets.py` : construction des dataloaders. Contient les points d'extension pour Fashion-MNIST et CelebA (non implémentés à ce stade — voir README section "Limites actuelles").
 - `src/models/vae.py` : implémentation du VAE.
-- `src/models/cvae.py` : implémentation du CVAE (conditionnement générique).
-- `src/losses/elbo.py` : fonction `elbo_loss` retournant dictionnaire {loss, reconstruction, kl, beta}.
-- `src/training/trainer.py` : boucle d'entraînement, validation, checkpointing.
-- `src/training/train.py` : point d'entrée CLI pour l'entraînement.
-- `scripts/generate_cvae_grid.py` : entraîne en court (smoke-test) et sauve une grille d'images conditionnées.
-- `reports/figures/` : contient `mnist_real_grid.png`, `cvae_grid.png`, `cvae_grid_8.png`.
+- `src/models/cvae.py` : implémentation du CVAE (conditionnement générique `one_hot` / `multi_label`).
+- `src/losses/elbo.py` : fonction `elbo_loss` retournant `{loss, reconstruction, kl, beta}`.
+- `src/training/trainer.py` : boucle d'entraînement, validation, checkpointing, logs CSV.
+- `src/training/train.py` : point d'entrée CLI pour l'entraînement (VAE ou CVAE selon la config).
+- `src/visualization/common.py` : fonctions partagées pour reconstruire un modèle depuis sa config et charger un checkpoint.
+- `src/visualization/latent.py`, `src/visualization/interpolation.py` : visualisations de l'espace latent.
+- `scripts/run_ablation.py` : étude d'ablation sur `beta`.
+- `scripts/generate_cvae_grid.py`, `scripts/generate_vae_recon_grid.py` : génération de figures à partir d'un checkpoint existant.
+- `scripts/evaluate.py` : comparaison quantitative VAE vs CVAE.
+- `reports/experiments/<nom>/` : un dossier par expérience (`vae_main`, `cvae_main`, `ablation/beta_0.1`, etc.), contenant `training_log.csv` et `best_checkpoint.pth`.
+- `reports/figures/` : toutes les figures produites — voir le tableau détaillé dans le README, section 6.
 
 ## 4. Comment exécuter localement (pas-à-pas)
 1. Installer les dépendances (virtualenv recommandé) :
@@ -47,72 +56,103 @@ python -m pip install -r requirements.txt
 python -m pytest -q
 ```
 
-3. Lancer un smoke-test d'entraînement VAE :
+3. Entraîner le VAE principal (≈30-45 min sur CPU, pas de smoke-test) :
+
+```bash
+python -m src.training.train --config configs/mnist_vae.yaml
+```
+
+4. Entraîner le CVAE principal :
+
+```bash
+python -m src.training.train --config configs/mnist_cvae.yaml
+```
+
+Un test rapide (quelques batches, pour vérifier que le code tourne sans attendre un entraînement complet) reste possible avec `--smoke-test` :
 
 ```bash
 python -m src.training.train --config configs/mnist_vae.yaml --smoke-test
 ```
 
-4. Générer une grille CVAE conditionnée (court entraînement automatique) :
+5. Lancer l'étude d'ablation sur `beta` (≈15-25 min sur CPU) :
 
 ```bash
-python scripts/generate_cvae_grid.py --config configs/mnist_cvae.yaml --output reports/figures/cvae_grid.png --samples-per-class 8
+python scripts/run_ablation.py --config configs/ablation_beta.yaml
 ```
 
-Les images seront sauvegardées dans `reports/figures/`.
+6. Générer les grilles d'images à partir d'un modèle déjà entraîné (rapide, pas de réentraînement) :
+
+```bash
+python scripts/generate_vae_recon_grid.py --checkpoint reports/experiments/vae_main/best_checkpoint.pth
+python scripts/generate_cvae_grid.py --checkpoint reports/experiments/cvae_main/best_checkpoint.pth --samples-per-class 8
+```
+
+7. Visualiser l'espace latent et une interpolation :
+
+```bash
+python -m src.visualization.latent --config configs/mnist_vae.yaml --checkpoint reports/experiments/vae_main/best_checkpoint.pth --output reports/figures/latent_tsne_vae.png
+python -m src.visualization.interpolation --config configs/mnist_vae.yaml --checkpoint reports/experiments/vae_main/best_checkpoint.pth --output reports/figures/interpolation_vae_3_to_8.png --class-a 3 --class-b 8
+```
+
+8. Comparaison quantitative VAE vs CVAE :
+
+```bash
+python scripts/evaluate.py
+```
+
+Toutes les images sont sauvegardées dans `reports/figures/`.
 
 ## 5. Explication simple des concepts (pour débutant)
-- Autoencodeur (AE) : réseau qui apprend à reproduire son entrée via un goulot d'encodage puis décodage. Utile pour compression et représentation.
-- Variational Autoencoder (VAE) : version probabiliste de l'AE. L'encodeur prédit une distribution (moyenne `mu` et variance `sigma^2`), on échantillonne latent `z ~ N(mu, sigma^2)`, puis le décodeur reconstruit. L'entraînement minimise deux termes :
-  - la perte de reconstruction (ici MSE entre image et reconstruction),
-  - la divergence KL entre la distribution latente et une prior (généralement N(0, I)).
-- CVAE : VAE conditionné sur une information (ex. label). On force le modèle à générer des images correspondant à une condition donnée.
+- **Autoencodeur (AE)** : réseau qui apprend à reproduire son entrée via un goulot d'encodage puis décodage. Utile pour compression et représentation.
+- **Variational Autoencoder (VAE)** : version probabiliste de l'AE. L'encodeur prédit une distribution (moyenne `mu` et variance `sigma^2`), on échantillonne un latent `z ~ N(mu, sigma^2)` (via la "reparamétrisation" : `z = mu + eps * sigma`, avec `eps` tiré au hasard, ce qui permet de rétropropager le gradient malgré le tirage aléatoire), puis le décodeur reconstruit. L'entraînement minimise deux termes :
+  - la perte de reconstruction (MSE entre image et reconstruction),
+  - la divergence KL entre la distribution latente apprise et une loi normale standard `N(0, I)` (le "prior").
+- **CVAE** : VAE conditionné sur une information (ici, le label de classe). Le label est concaténé à l'image en entrée de l'encodeur, et au vecteur latent en entrée du décodeur. Cela force le modèle à générer des images correspondant à la condition donnée, sans que l'espace latent ait besoin d'encoder lui-même l'identité de la classe.
+- **β (beta)** : poids appliqué au terme KL. Un `beta` élevé force un espace latent très proche de `N(0, I)`, au prix d'une reconstruction moins fidèle (et, en excès, d'un effondrement de l'espace latent, voir "posterior collapse" ci-dessous). Un `beta` faible privilégie la reconstruction, au prix d'un espace latent moins régulier.
+- **Posterior collapse** : quand `beta` est trop élevé, le modèle "abandonne" et arrête d'utiliser l'espace latent (KL proche de 0) : le décodeur produit presque toujours la même image, quel que soit `z`. Nous l'avons observé concrètement avec `beta=5.0` dans l'étude d'ablation (voir README, section 7).
 
-## 6. Interprétation des résultats et métriques (très simple)
-- ELBO (Evidence Lower Bound) = - (reconstruction_loss + beta * KL)
-- Nous rapportons séparément :
-  - `reconstruction` : plus petit vaut mieux (meilleure reconstruction),
-  - `kl` : donne combien la latente s'écarte de la prior ; si `kl` ~ 0, le modèle n'utilise pas le latent (problème d'effondrement), si trop grand, latente trop informatif et génération peut être mauvaise.
-- Exemples d'interprétation :
-  - Reconstruction faible + KL modéré → bon équilibre.
-  - Reconstruction faible + KL très faible → modèle ignore latente (posterior collapse).
-  - Reconstruction élevée (erreur haute) → modèle pas encore entraîné ou architecture insuffisante.
+## 6. Interprétation des résultats et métriques
+- ELBO (Evidence Lower Bound), minimisée pendant l'entraînement : `loss = reconstruction + beta * KL`.
+- `reconstruction` : plus petit vaut mieux (meilleure reconstruction).
+- `kl` : mesure l'écart entre la distribution latente apprise et le prior. Si `kl` ~ 0, le modèle n'utilise pas le latent (posterior collapse) ; si trop grand, le latent est peu régularisé et la génération à partir d'un `z` aléatoire risque d'être mauvaise.
+- Grille d'interprétation :
+  - Reconstruction faible + KL modéré → bon équilibre (c'est notre cas avec `beta=1.0`, KL≈15-17).
+  - Reconstruction faible + KL très faible → modèle ignore le latent (observé avec `beta=5.0`, KL≈0.56).
+  - Reconstruction élevée (erreur haute) et KL très élevé → modèle pas assez entraîné, ou `beta` trop faible (observé avec `beta=0.1`, KL≈39.5 : le modèle privilégie fortement la reconstruction au détriment de la régularité du latent).
 
-Figures :
-- `mnist_real_grid.png` : patch d'images réelles — sert de référence visuelle.
-- `cvae_grid.png` / `cvae_grid_8.png` : pour chaque ligne (condition), des échantillons conditionnés. Regardez si la ligne correspondant à la condition "3" ressemble majoritairement à des 3.
+Les chiffres réels obtenus cette séance (entraînements complets, pas des smoke-tests) sont détaillés dans le [README.md](../README.md), sections 6 et 7. Ce document-ci reste volontairement générique pour rester valable après de futurs runs.
 
 ## 7. Glossaire (termes traduits)
-- Encoder → Encodeur
-- Decoder → Décodeur
-- Latent space → Espace latent
-- Reconstruction loss → Perte de reconstruction
-- KL divergence → Divergence de Kullback-Leibler (KL)
-- Epoch → Époque (passage complet sur le dataset)
-- Batch → Mini-lot
-- Seed → Graine aléatoire (pour reproduction)
+| Terme anglais | Traduction / explication |
+|---|---|
+| Encoder | Encodeur |
+| Decoder | Décodeur |
+| Latent space | Espace latent |
+| Reconstruction loss | Perte de reconstruction |
+| KL divergence | Divergence de Kullback-Leibler (KL) |
+| Epoch | Époque (un passage complet sur le dataset) |
+| Batch | Mini-lot |
+| Seed | Graine aléatoire (pour reproduction) |
+| Beta (β-VAE) | Poids du terme KL dans la loss |
+| Posterior collapse | Effondrement de l'espace latent (le modèle cesse de l'utiliser) |
+| Checkpoint | Sauvegarde des poids du modèle |
 
 ## 8. Questions / Réponses possibles (FAQ)
-Q: Pourquoi le modèle ne génère-t-il pas des chiffres nets ?
-R: Smoke-test court : modèle pas entraîné suffisamment. Augmente `epochs` et vérifie `beta` et `latent_dim`.
 
-Q: Comment changer le dataset ?
-R: Modifier ou ajouter un fichier YAML dans `configs/` et étendre `src/data/datasets.py` avec une clé `name` correspondante. Le code est conçu pour être agnostique au dataset si le dataset retourne `DatasetInfo`.
+**Q : Pourquoi les images générées sont-elles floues ?**
+R : C'est une propriété connue des VAE entraînés avec une perte MSE (par opposition, par exemple, à un GAN) : le modèle a tendance à "moyenner" les incertitudes plutôt que de trancher nettement. Ce n'est pas un bug.
 
-Q: Comment savoir si le modèle utilise bien la condition ?
-R: Regarde les grilles conditionnées : si les lignes correspondent aux labels, alors oui. On peut aussi mesurer la mutual information empirique entre label et reconstruction (non fourni automatiquement ici).
+**Q : Comment changer le dataset ?**
+R : Ajouter/modifier un fichier YAML dans `configs/` et étendre `src/data/datasets.py` avec la clé `name` correspondante. Le code est conçu pour être agnostique au dataset tant que le loader retourne un `DatasetInfo`. Attention : à ce stade, `fashion_mnist` est déclaré dans le code mais **charge encore MNIST** en interne — ce n'est pas encore un vrai second dataset (voir README, section "Limites actuelles").
 
-Q: Comment ré-exécuter un run reproductible ?
-R: Assure-toi d'utiliser la même `seed` dans le YAML (`training.seed`) et le même `device` (CPU/GPU). Les résultats seront proches si tout est identique.
+**Q : Comment savoir si le CVAE utilise bien la condition ?**
+R : Regarder `reports/figures/cvae_grid.png` — chaque ligne doit correspondre à la classe demandée. Nous avons aussi essayé une mesure automatique (plus proche centroïde), dont les limites sont expliquées en détail dans le README, section 6.4 : à utiliser avec prudence, l'inspection visuelle reste plus fiable à ce stade.
+
+**Q : Comment ré-exécuter un run reproductible ?**
+R : Utiliser la même `seed` dans le YAML (`training.seed`) et le même `device`. Les résultats seront identiques (ou très proches) si tout le reste ne change pas.
+
+**Q : Pourquoi limiter l'ablation à un sous-ensemble de données ?**
+R : Contrainte de temps de calcul (CPU uniquement, un epoch complet prend ~2min30 à 3min sur les 54 000 images). Le sous-échantillonnage ne s'applique qu'au train set : la validation reste complète, donc la comparaison entre les valeurs de `beta` reste fiable.
 
 ## 9. Prochaines étapes recommandées
-- Ajouter des scripts d'évaluation qualitatives (interpolation, t-SNE/UMAP des latents).
-- Automatiser l'ablation sur `beta` (script prévu `configs/ablation_beta.yaml`).
-- Ajouter des notebooks d'exploration pour visualiser latentes et métriques.
-
----
-
-Pour toute modification, dis-moi si tu veux :
-- que je pousse la branche sur un remote (fournis l'URL remote),
-- que j'ajoute une section plus pédagogique (exercices pas-à-pas),
-- ou que je crée des notebooks explicatifs.
+Voir le README, section 11, pour la liste complète et priorisée (Fashion-MNIST, CelebA, classifieur pour la contrôlabilité, démo web, FID).

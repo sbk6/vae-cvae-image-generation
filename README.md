@@ -307,4 +307,6 @@ python scripts/evaluate.py
 ## Documents à consulter
 
 - [Résultats d'ablation générés automatiquement](docs/RESULTATS.md)
-- [Explications détaillées de la séance précédente (contexte historique)](docs/explanations.md)
+- [Version condensée pour l'oral de cette séance](docs/presentation_seance_4.md)
+- [Explications techniques détaillées (comment exécuter, concepts, FAQ)](docs/explanations.md)
+- [Compte rendu de la toute première séance (archive)](docs/presentation_seance_1.md)
