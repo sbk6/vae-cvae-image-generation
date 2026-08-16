@@ -1,3 +1,5 @@
+> **Note** : ce document date de la séance précédente et contient des chiffres obtenus en mode "smoke-test" (entraînement très court), pas des résultats finaux. Pour les résultats à jour (vrais entraînements, ablation β, comparaison VAE/CVAE), voir le [README.md](../README.md) à la racine du projet.
+
 # Documentation du projet — Explications détaillées (français)
 
 ## 1. Objectif du projet

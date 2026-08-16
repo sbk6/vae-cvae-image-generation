@@ -1,0 +1,23 @@
+[
+  {
+    "beta": 0.1,
+    "final_val_loss": 684.8166204427083,
+    "final_val_reconstruction": 680.8691468098958,
+    "final_val_kl": 39.47477694702148,
+    "output_dir": "reports\\experiments\\ablation\\beta_0.1"
+  },
+  {
+    "beta": 1.0,
+    "final_val_loss": 707.2035299479166,
+    "final_val_reconstruction": 691.8332190755208,
+    "final_val_kl": 15.3703077545166,
+    "output_dir": "reports\\experiments\\ablation\\beta_1.0"
+  },
+  {
+    "beta": 5.0,
+    "final_val_loss": 727.8977540690104,
+    "final_val_reconstruction": 725.1119931640625,
+    "final_val_kl": 0.5571512104670207,
+    "output_dir": "reports\\experiments\\ablation\\beta_5.0"
+  }
+]

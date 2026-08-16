@@ -1,3 +1,5 @@
+> **Note** : ce document correspond à la toute première séance (mise en place du socle, résultats en mode "smoke-test"). Pour les résultats à jour (vrais entraînements, ablation β, comparaison VAE/CVAE), voir le [README.md](../README.md) à la racine du projet.
+
 # Présentation de séance — VAE / CVAE sur MNIST
 
 Bonsoir Monsieur,
