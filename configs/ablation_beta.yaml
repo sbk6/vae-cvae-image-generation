@@ -1,13 +1,22 @@
+dataset:
+  name: mnist
+  image_size: [28, 28]
+  channels: 1
+  num_classes: 10
+  condition_mode: one_hot
+  # Sous-échantillon du train set pour accélérer l'étude d'ablation sur CPU.
+  # Le val/test restent complets pour garder une mesure fiable.
+  train_subset: 12000
 ablation:
-  betas: [0.01, 0.1, 0.5, 1.0, 5.0]
-  seeds: [42, 123]
-training:
-  epochs: 10
-  batch_size: 128
-  lr: 1e-3
-  device: auto
-  output_dir: reports
+  betas: [0.1, 1.0, 5.0]
 model:
+  type: vae
   latent_dim: 16
   hidden_channels: 32
-  condition_mode: one_hot
+training:
+  seed: 42
+  batch_size: 128
+  epochs: 6
+  lr: 0.001
+  device: auto
+  output_dir: reports/experiments/ablation

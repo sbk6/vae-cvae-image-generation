@@ -34,6 +34,12 @@ def build_mnist_loaders(config: Dict[str, Any]) -> Tuple[DataLoader, DataLoader,
     train_size = len(train_set) - val_size
     train_subset, val_subset = random_split(train_set, [train_size, val_size])
 
+    # Sous-échantillonnage optionnel du train set : utile pour accélérer les
+    # études d'ablation sur CPU sans changer le protocole (val/test restent complets).
+    max_train_samples = config["dataset"].get("train_subset")
+    if max_train_samples is not None and max_train_samples < len(train_subset):
+        train_subset = torch.utils.data.Subset(train_subset, list(range(max_train_samples)))
+
     batch_size = config["training"]["batch_size"]
     num_workers = min(4, os.cpu_count() or 1)
 

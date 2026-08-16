@@ -1,0 +1,146 @@
+"""Étude d'ablation sur le poids beta de la loss ELBO (beta-VAE).
+
+Pour chaque valeur de beta listée dans le fichier de config, on entraîne un VAE
+depuis zéro (même seed, même architecture, même nombre d'epochs) et on
+sauvegarde les métriques finales de validation. Un tableau Markdown et une
+courbe reconstruction/KL en fonction de beta sont ensuite générés.
+"""
+import argparse
+import copy
+import json
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT_DIR))
+
+import matplotlib.pyplot as plt
+
+from src.data.datasets import build_dataloaders
+from src.models.vae import VAE
+from src.training.trainer import train
+from src.utils.config import load_yaml_config
+from src.utils.seed import set_seed
+
+
+def run_one_beta(base_config: dict, beta: float) -> dict:
+    config = copy.deepcopy(base_config)
+    config["training"]["beta"] = beta
+    config["training"]["output_dir"] = str(Path(base_config["training"]["output_dir"]) / f"beta_{beta}")
+    config["smoke_test"] = False
+
+    set_seed(config["training"].get("seed", 42))
+    train_loader, val_loader, test_loader, dataset_info = build_dataloaders(config)
+
+    model = VAE(
+        channels=dataset_info.channels,
+        image_size=dataset_info.image_size,
+        latent_dim=config["model"]["latent_dim"],
+        hidden_channels=config["model"]["hidden_channels"],
+    )
+
+    train(config, model, train_loader, val_loader)
+
+    log_path = Path(config["training"]["output_dir"]) / "training_log.csv"
+    last_val = None
+    with open(log_path, "r", encoding="utf-8") as f:
+        import csv
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row["phase"] == "val":
+                last_val = row
+    return {
+        "beta": beta,
+        "final_val_loss": float(last_val["loss"]),
+        "final_val_reconstruction": float(last_val["reconstruction"]),
+        "final_val_kl": float(last_val["kl"]),
+        "output_dir": config["training"]["output_dir"],
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Etude d'ablation sur beta (beta-VAE)")
+    parser.add_argument("--config", type=str, default="configs/ablation_beta.yaml")
+    parser.add_argument("--results-json", type=str, default="reports/experiments/ablation/results.json")
+    parser.add_argument("--results-md", type=str, default="docs/RESULTATS.md")
+    parser.add_argument("--figure", type=str, default="reports/figures/ablation_beta_curve.png")
+    args = parser.parse_args()
+
+    base_config = load_yaml_config(args.config)
+    betas = base_config["ablation"]["betas"]
+
+    results = []
+    for beta in betas:
+        print(f"=== Ablation: beta={beta} ===")
+        result = run_one_beta(base_config, beta)
+        results.append(result)
+        print(result)
+
+    Path(args.results_json).parent.mkdir(parents=True, exist_ok=True)
+    with open(args.results_json, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2)
+
+    write_markdown_table(results, args.results_md, base_config)
+    plot_curve(results, args.figure)
+    print(f"Résultats sauvegardés dans {args.results_json}, {args.results_md}, {args.figure}")
+
+
+def write_markdown_table(results: list, output_path: str, base_config: dict) -> None:
+    lines = []
+    lines.append("# Résultats — Étude d'ablation sur beta (beta-VAE)\n")
+    lines.append(
+        f"Protocole : VAE identique pour toutes les valeurs de beta "
+        f"(latent_dim={base_config['model']['latent_dim']}, "
+        f"hidden_channels={base_config['model']['hidden_channels']}, "
+        f"epochs={base_config['training']['epochs']}, "
+        f"seed={base_config['training']['seed']}, "
+        f"train_subset={base_config['dataset'].get('train_subset', 'complet')}).\n"
+    )
+    lines.append("| beta | reconstruction (val) | KL (val) | loss totale (val) |")
+    lines.append("|---|---|---|---|")
+    for r in sorted(results, key=lambda x: x["beta"]):
+        lines.append(
+            f"| {r['beta']} | {r['final_val_reconstruction']:.2f} | {r['final_val_kl']:.2f} | {r['final_val_loss']:.2f} |"
+        )
+    lines.append("")
+    lines.append(
+        "Lecture du tableau : quand `beta` augmente, la KL est davantage pénalisée, "
+        "donc elle a tendance à baisser (latent plus proche de la loi normale, mieux régularisé), "
+        "mais la reconstruction se dégrade (l'image reconstruite est moins fidèle). "
+        "Un `beta` trop petit fait l'inverse : bonne reconstruction mais latent peu structuré, "
+        "avec un risque de mauvaise génération quand on échantillonne un `z` aléatoire."
+    )
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def plot_curve(results: list, output_path: str) -> None:
+    results_sorted = sorted(results, key=lambda x: x["beta"])
+    betas = [r["beta"] for r in results_sorted]
+    recon = [r["final_val_reconstruction"] for r in results_sorted]
+    kl = [r["final_val_kl"] for r in results_sorted]
+
+    fig, ax1 = plt.subplots(figsize=(6, 4))
+    color1 = "tab:blue"
+    ax1.set_xlabel("beta")
+    ax1.set_ylabel("reconstruction (val)", color=color1)
+    ax1.plot(betas, recon, marker="o", color=color1, label="reconstruction")
+    ax1.tick_params(axis="y", labelcolor=color1)
+    ax1.set_xscale("log")
+
+    ax2 = ax1.twinx()
+    color2 = "tab:red"
+    ax2.set_ylabel("KL (val)", color=color2)
+    ax2.plot(betas, kl, marker="s", color=color2, label="KL")
+    ax2.tick_params(axis="y", labelcolor=color2)
+
+    plt.title("Effet de beta sur reconstruction vs KL")
+    fig.tight_layout()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+if __name__ == "__main__":
+    main()

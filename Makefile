@@ -2,11 +2,17 @@ install:
 	python -m pip install --upgrade pip
 	python -m pip install -r requirements.txt
 
-train:
+train-vae:
 	python -m src.training.train --config configs/mnist_vae.yaml
+
+train-cvae:
+	python -m src.training.train --config configs/mnist_cvae.yaml
 
 ablation:
 	python scripts/run_ablation.py --config configs/ablation_beta.yaml
+
+evaluate:
+	python scripts/evaluate.py
 
 test:
 	python -m pytest
