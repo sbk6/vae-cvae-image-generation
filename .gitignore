@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Dataset MNIST telecharge automatiquement par torchvision (~64 Mo).
+# La demo web n'en a pas besoin : elle utilise backend/assets/mnist_samples.npz.
+data/
+
+# Frontend
+node_modules/
+frontend/dist/
+frontend/node_modules/
+npm-debug.log*
+
+# Outillage local
+.claude/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Les checkpoints et figures de reports/ sont volontairement versionnes :
+# ils sont le livrable des seances precedentes et alimentent la demo.
