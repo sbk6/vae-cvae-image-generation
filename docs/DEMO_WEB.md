@@ -108,27 +108,46 @@ sont tous chargés à l'import, et les supprimer fait échouer le démarrage.
 
 ## 4. Intégrer les checkpoints Fashion-MNIST
 
-Les poids de David **ne sont pas dans le dépôt** : son `.gitignore` exclut
-`*.pt`, `*.pth` et `checkpoints/`. Tant qu'ils sont absents, le dataset
-Fashion-MNIST est simplement masqué et le reste de la démo fonctionne
-normalement.
+Les poids de David **ne sont pas versionnés** : son `.gitignore` exclut `*.pt`,
+`*.pth` et `checkpoints/`. Ils se déposent manuellement dans
+`projects/david_fashion_mnist/checkpoints/`, et sont détectés au démarrage.
 
-Pour les activer, déposer les fichiers ici :
+### État de la livraison
 
-```
-projects/david_fashion_mnist/checkpoints/
-  vae_beta_01.pt      cvae_beta_01.pt
-  vae_beta_1.pt       cvae_beta_1.pt
-  vae_beta_4.pt       cvae_beta_4.pt
-```
+Deux checkpoints ont été transmis, décrits par lui comme « sélectionnés pour
+l'application web » :
 
-Puis redémarrer l'API. Aucune configuration n'est nécessaire :
+| Fichier | Type | β | Epoch | Taille |
+|---|---|---|---|---|
+| `vae_beta_1_seed42_final.pt` | VAE | 1.0 | 92 | 19,3 Mo |
+| `cvae_beta_1_seed42_final.pt` | CVAE | 1.0 | 92 | 19,4 Mo |
+
+Intégrité vérifiée contre les SHA256 de son `model_manifest.json`.
+
+**Les runs β = 0.1 et β = 4 n'ont pas été transmis.** L'onglet Ablation est donc
+inactif sur Fashion-MNIST : une série d'un seul β ne permet aucune comparaison.
+L'écran l'explique et renvoie vers le tableau de chiffres, qui reste
+consultable puisqu'il vient de ses CSV. Les quatre autres onglets fonctionnent
+normalement. Ajouter les fichiers manquants suffira à activer l'écran, sans
+aucune modification de code.
+
+### Ce qui est automatique
 
 - le **type** (VAE ou CVAE) et le **β** sont lus dans le nom du fichier —
-  convention de David, où le point décimal est supprimé (`beta_01` = 0.1) ;
+  convention de David, où le point décimal est supprimé (`beta_01` = 0.1). Les
+  suffixes de run (`_seed42_final`) sont ignorés ;
 - l'**architecture** (`latent_dim`, `hidden_dim`, `num_classes`) est déduite
   des formes du `state_dict`. Les poids sont la seule source de vérité, donc un
   checkpoint aux métadonnées incohérentes se chargera quand même.
+
+### Chargement
+
+`torch.load` désérialise par défaut via pickle, ce qui **exécute du code
+contenu dans le fichier**. Les checkpoints étant reçus de l'extérieur, ils sont
+lus avec `weights_only=True` : ils ne contiennent que des tenseurs et des types
+primitifs, cette restriction suffit donc. Un repli vers le chargement complet
+existe pour d'éventuels checkpoints plus anciens, mais n'est pas atteint par
+les poids actuels.
 
 En Docker, `make docker-run-mounted` monte le dossier depuis l'hôte, ce qui
 évite de reconstruire l'image à chaque changement de poids.

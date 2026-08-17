@@ -292,11 +292,30 @@ def test_ablation_couvre_toute_la_serie_de_betas(client, dataset_id):
 
 @requires_fashion
 def test_ablation_permet_de_choisir_la_serie(client):
-    payload = client.post(
+    response = client.post(
         "/api/ablation/compare", json={"dataset": "fashion_mnist", "series": "cvae", "class_label": 8}
-    ).get_json()
+    )
+    if response.status_code == 503:
+        # Cas courant en pratique : seul le checkpoint beta = 1 a ete livre,
+        # une serie d'un seul modele ne permet aucune comparaison.
+        pytest.skip("Serie CVAE incomplete : un seul beta disponible")
+
+    payload = response.get_json()
     assert payload["series"] == "cvae"
     assert all(result["model_id"].startswith("fashion/cvae") for result in payload["results"])
+
+
+@requires_fashion
+def test_serie_incomplete_renvoie_une_erreur_explicite(client):
+    """Une serie d'un seul modele doit etre refusee avec un message actionnable,
+    pas produire une comparaison a un seul element qui n'apprend rien."""
+    response = client.post("/api/ablation/compare", json={"dataset": "fashion_mnist"})
+    assert response.status_code in (200, 503)
+    if response.status_code == 503:
+        message = response.get_json()["error"]
+        assert "incomplete" in message.lower()
+    else:
+        assert len(response.get_json()["results"]) >= 2
 
 
 @requires_fashion

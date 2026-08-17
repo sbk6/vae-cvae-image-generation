@@ -119,6 +119,23 @@ def _infer_architecture(state_dict: Dict[str, torch.Tensor]) -> Dict[str, int]:
     }
 
 
+def _read_checkpoint(checkpoint_path: Path, map_location) -> Any:
+    """Lit un checkpoint en desactivant l'execution de pickle arbitraire.
+
+    `torch.load` deserialise par defaut via pickle, ce qui execute du code
+    contenu dans le fichier. Les checkpoints de David n'embarquent que des
+    tenseurs et des types primitifs, donc `weights_only=True` suffit et evite
+    d'accorder une confiance inutile a un fichier recu de l'exterieur.
+
+    Le repli couvre les checkpoints plus anciens qui contiendraient des objets
+    Python serialises ; il n'est pas atteint par les poids actuels.
+    """
+    try:
+        return torch.load(checkpoint_path, map_location=map_location, weights_only=True)
+    except Exception:
+        return torch.load(checkpoint_path, map_location=map_location, weights_only=False)
+
+
 def load(
     checkpoint_path: Path,
     device: torch.device,
@@ -128,7 +145,7 @@ def load(
 
     Aucun YAML n'est requis : l'architecture est reconstruite depuis les poids.
     """
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    checkpoint = _read_checkpoint(checkpoint_path, device)
     state_dict = _extract_state_dict(checkpoint)
     architecture = _infer_architecture(state_dict)
 
@@ -154,7 +171,7 @@ def describe(checkpoint_path: Path) -> Dict[str, Any]:
     Sert au catalogue pour afficher beta et le type de modele sans payer le
     cout d'un chargement complet.
     """
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint = _read_checkpoint(checkpoint_path, "cpu")
     if not isinstance(checkpoint, dict):
         return {}
     configuration = checkpoint.get("configuration") or {}

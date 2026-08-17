@@ -9,12 +9,14 @@ export default function AblationView({ dataset }) {
   const [classLabel, setClassLabel] = useState(0)
   const [metrics, setMetrics] = useState(null)
   const [error, setError] = useState(null)
+  const [incomplete, setIncomplete] = useState(null)
   const [loading, setLoading] = useState(false)
 
   const draw = useCallback(
     (requestedSeries, requestedClass) => {
       setLoading(true)
       setError(null)
+      setIncomplete(null)
       // Pas de seed : chaque appel tire un nouveau z, mais le meme z est envoye
       // a tous les modeles de la serie — c'est ce qui rend la comparaison honnete.
       compareAblation({
@@ -27,7 +29,16 @@ export default function AblationView({ dataset }) {
           setSeries(payload.series)
           setAvailableSeries(payload.available_series || [])
         })
-        .catch((err) => setError(err.message))
+        .catch((err) => {
+          // Une serie incomplete n'est pas une panne : c'est un checkpoint
+          // manquant, avec une action claire pour le recuperer.
+          setResults([])
+          if (/incomplète|incomplete|Aucun checkpoint/i.test(err.message)) {
+            setIncomplete(err.message)
+          } else {
+            setError(err.message)
+          }
+        })
         .finally(() => setLoading(false))
     },
     [dataset.id],
@@ -52,7 +63,11 @@ export default function AblationView({ dataset }) {
         </p>
 
         <div className="controls">
-          <button className="btn" onClick={() => draw(series, conditional ? classLabel : undefined)} disabled={loading}>
+          <button
+            className="btn"
+            onClick={() => draw(series, conditional ? classLabel : undefined)}
+            disabled={loading || Boolean(incomplete)}
+          >
             {loading ? 'Décodage…' : 'Tirer un nouveau z'}
           </button>
 
@@ -91,6 +106,22 @@ export default function AblationView({ dataset }) {
 
         {error && <Notice kind="error">{error}</Notice>}
 
+        {incomplete && (
+          <Notice kind="warn">
+            <strong>Série d'ablation incomplète pour ce dataset.</strong> Un seul β est disponible,
+            il en faut au moins deux pour que la comparaison ait un sens. Les checkpoints livrés se
+            limitent à β = 1, sélectionnés pour l'application web ; les runs β = 0.1 et β = 4
+            existent côté entraînement mais n'ont pas été transmis.
+            <br />
+            <br />
+            Pour activer cet écran, déposer <code className="mono">vae_beta_01*.pt</code>,{' '}
+            <code className="mono">vae_beta_4*.pt</code> (et leurs équivalents CVAE) dans{' '}
+            <code className="mono">projects/david_fashion_mnist/checkpoints/</code>. Ils seront
+            détectés automatiquement. Les chiffres correspondants restent consultables dans le
+            tableau ci-dessous.
+          </Notice>
+        )}
+
         <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
           {results.map((result) => (
             <div key={result.model_id} style={{ textAlign: 'center', flex: '0 0 160px' }}>
@@ -102,7 +133,7 @@ export default function AblationView({ dataset }) {
           ))}
         </div>
 
-        {dataset.id === 'mnist' && (
+        {results.length > 0 && dataset.id === 'mnist' && (
           <Notice kind="info">
             <strong>β = 5.0 produit une tache informe, et c'est le résultat attendu.</strong> Le
             terme KL domine la loss, le modèle ferme son espace latent (KL ≈ 0.56) et le décodeur
@@ -110,7 +141,7 @@ export default function AblationView({ dataset }) {
             β = 0.1 reconstruit plus finement mais régularise mal ; β = 1.0 est le compromis retenu.
           </Notice>
         )}
-        {dataset.id === 'fashion_mnist' && (
+        {results.length > 0 && dataset.id === 'fashion_mnist' && (
           <Notice kind="info">
             L'effondrement est plus progressif ici : le KL passe de 41 à 6.8 entre β = 0.1 et β = 4
             (contre 39 → 0.56 sur MNIST). Fashion-MNIST étant plus texturé, le modèle a davantage
