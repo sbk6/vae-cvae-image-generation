@@ -222,7 +222,7 @@ Déjà résolues précédemment (voir `docs/explanations.md` pour le détail) ; 
 - Intégrer **CelebA** (ou un sous-échantillon), avec conditionnement `multi_label` sur quelques attributs (déjà prévu dans le code de `CVAE`, jamais testé).
 - Entraîner un petit classifieur CNN sur MNIST pour remplacer le proxy "plus proche centroïde" par une vraie mesure de contrôlabilité.
 - Si une machine avec GPU devient disponible, relancer les modèles principaux avec plus d'epochs et comparer.
-- Préparer la démonstration web demandée par l'énoncé (sélection d'une classe → génération, slider d'interpolation).
+- ~~Préparer la démonstration web demandée par l'énoncé (sélection d'une classe → génération, slider d'interpolation).~~ **Fait** — voir [docs/DEMO_WEB.md](docs/DEMO_WEB.md).
 - Calculer un score FID si les ressources de calcul le permettent.
 
 ## 12. Glossaire
@@ -267,7 +267,7 @@ Installer les dépendances :
 python -m pip install -r requirements.txt
 ```
 
-Lancer les tests (8 tests, doivent tous passer) :
+Lancer les tests (49 tests, doivent tous passer) :
 ```bash
 python -m pytest -q
 ```
@@ -304,8 +304,49 @@ Relancer la comparaison quantitative VAE vs CVAE :
 python scripts/evaluate.py
 ```
 
+Lancer la démonstration web (voir section ci-dessous) :
+```bash
+make install-demo && make fixtures && make demo
+```
+
+## Démonstration web
+
+La démonstration interactive demandée par l'énoncé est disponible : API Flask +
+interface React, servies sur un seul port, avec inférence en direct sur les
+checkpoints entraînés (~14 ms par image sur CPU).
+
+Elle sert **les deux sous-projets dans une seule application** : MNIST (`src/`)
+et Fashion-MNIST (`projects/david_fashion_mnist/`), avec un sélecteur de
+dataset en en-tête. Les deux implémentations de VAE/CVAE sont incompatibles
+entre elles (normalisation, plage de sortie, conditionnement, signatures) ;
+elles sont réconciliées par une couche d'adaptateurs dans `backend/adapters/`,
+sans qu'aucune ligne de code ML ait été modifiée.
+
+Cinq écrans : génération conditionnée par classe, interpolation latente avec
+slider, exploration des dimensions de z au curseur, comparaison VAE/CVAE, et
+comparaison de la série d'ablation β à vecteur latent identique.
+
+Installation puis lancement :
+```bash
+make install-demo
+make fixtures
+make demo
+```
+
+Puis ouvrir http://localhost:8000. Une variante dockerisée est disponible via
+`make docker-demo`.
+
+Les checkpoints Fashion-MNIST étant gitignorés, ils doivent être déposés dans
+`projects/david_fashion_mnist/checkpoints/` pour activer ce dataset ; ils sont
+détectés automatiquement. En leur absence, la démo fonctionne normalement sur
+MNIST seul.
+
+Architecture, référence de l'API et justification des choix techniques :
+[docs/DEMO_WEB.md](docs/DEMO_WEB.md).
+
 ## Documents à consulter
 
+- [Démonstration web : architecture, API, mode d'emploi](docs/DEMO_WEB.md)
 - [Résultats d'ablation générés automatiquement](docs/RESULTATS.md)
 - [Version condensée pour l'oral de cette séance](docs/presentation_seance_4.md)
 - [Explications techniques détaillées (comment exécuter, concepts, FAQ)](docs/explanations.md)
