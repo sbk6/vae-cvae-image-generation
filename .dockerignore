@@ -1,0 +1,35 @@
+# Dataset MNIST brut (~64 Mo) : inutile dans l'image, la demo utilise le
+# fixture precalcule backend/assets/mnist_samples.npz (~20 Ko).
+data/
+
+# Figures statiques : la demo genere ses images en direct.
+reports/figures/
+
+# Resultats de David : seuls les CSV sont lus par l'API (/api/metrics).
+# Les figures et exports peseraient ~16 Mo pour rien dans l'image.
+projects/**/results/**/*.png
+projects/**/results/**/*.pdf
+projects/**/results/**/*.svg
+projects/**/results/**/*.xlsx
+projects/**/results/**/*.txt
+
+# Artefacts de build et caches
+node_modules/
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+**/*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Versionnement et outillage local
+.git/
+.gitignore
+.claude/
+.venv/
+venv/
+
+# Documentation : non necessaire au runtime
+docs/
+*.md
+!README.md
