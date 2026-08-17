@@ -1,0 +1,27 @@
+# Dependances de l'API de demonstration uniquement.
+#
+# Volontairement plus legere que le requirements.txt racine : matplotlib,
+# scikit-learn et umap-learn ne servent qu'aux scripts de figures hors-ligne
+# (~350 Mo a eux trois) et n'ont rien a faire dans l'image Docker de l'API.
+#
+# Le suffixe "+cpu" est un local version specifier qui n'existe PAS sur PyPI :
+# il force pip a resoudre torch depuis l'index PyTorch CPU ci-dessous. Sans ca,
+# pip installerait la build CUDA (~2.5 Go) alors que la demo tourne sur CPU.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.13.0+cpu
+# Requis a l'import : src/data/datasets.py importe torchvision au niveau module.
+torchvision==0.28.0+cpu
+
+numpy==2.3.5
+PyYAML==6.0.3
+Pillow==12.3.0
+
+Flask==3.1.3
+flask-cors==6.0.5
+# Serveur WSGI de production, multi-thread et compatible Windows.
+waitress==3.0.2
+
+# Requis indirectement : src/training/trainer.py importe tqdm au niveau module,
+# et on reutilise son get_device() plutot que de le dupliquer ici.
+tqdm==4.70.0
