@@ -1,0 +1,5 @@
+checkpoint,model_type,beta,class_index,class_name,source_test_index,target_test_index,steps
+vae_beta_01.pt,VAE,0.1,0,T-shirt/top,5317,6225,9
+vae_beta_01.pt,VAE,0.1,1,Trouser,6351,3318,9
+vae_beta_01.pt,VAE,0.1,5,Sandal,2217,5460,9
+vae_beta_01.pt,VAE,0.1,9,Ankle boot,2066,5089,9

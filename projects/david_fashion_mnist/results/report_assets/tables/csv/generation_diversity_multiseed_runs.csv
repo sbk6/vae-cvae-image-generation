@@ -1,0 +1,4 @@
+checkpoint,model_type,beta,training_seed,split_seed_protocol,checkpoint_split_seed,latent_seed,best_epoch,latent_dim,generated_count,coherent_count,conditional_accuracy,pixel_pairwise_rms_all_macro,pixel_pairwise_rms_coherent_macro,feature_cosine_diversity_all_macro,feature_cosine_diversity_coherent_macro
+cvae_beta_1_seed0_gpu_multiseed.pt,CVAE,1.0,0,42,42,42,76,16,10000,8169,0.8169,0.2627351682814842,0.2565762948702678,0.2029766858315604,0.16804304556125302
+cvae_beta_1_seed42_final.pt,CVAE,1.0,42,42,,42,92,16,10000,8338,0.8338,0.2621970867648006,0.2565009653066609,0.1901079219013227,0.161097625613788
+cvae_beta_1_seed123_gpu_multiseed.pt,CVAE,1.0,123,42,42,42,83,16,10000,8219,0.8219,0.2635971332661694,0.25725758573719804,0.1972346723249409,0.1641119626159698

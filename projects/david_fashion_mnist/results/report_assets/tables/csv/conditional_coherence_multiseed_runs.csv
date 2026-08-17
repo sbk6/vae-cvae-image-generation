@@ -1,0 +1,4 @@
+checkpoint,model_type,beta,training_seed,split_seed_protocol,checkpoint_split_seed,best_epoch,samples_per_class,total_generated_images,correct_predictions,conditional_accuracy,latent_seed,same_latents_across_seeds,same_latents_across_classes,classifier_checkpoint,classifier_validation_accuracy
+cvae_beta_1_seed0_gpu_multiseed.pt,CVAE,1.0,0,42,42,76,1000,10000,8169,0.8169,42,True,True,fashion_classifier_seed42_final.pt,0.9261666666666667
+cvae_beta_1_seed42_final.pt,CVAE,1.0,42,42,,92,1000,10000,8338,0.8338,42,True,True,fashion_classifier_seed42_final.pt,0.9261666666666667
+cvae_beta_1_seed123_gpu_multiseed.pt,CVAE,1.0,123,42,42,83,1000,10000,8219,0.8219,42,True,True,fashion_classifier_seed42_final.pt,0.9261666666666667

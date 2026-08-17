@@ -1,0 +1,8 @@
+checkpoint=vae_beta_4.pt
+model_type=VAE
+beta=4.0
+samples=3000
+latent_dim=16
+pca_variance_1=0.24916762113571167
+pca_variance_2=0.22910195589065552
+pca_variance_total=0.4782695770263672

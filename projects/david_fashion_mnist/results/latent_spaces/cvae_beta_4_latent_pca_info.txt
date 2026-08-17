@@ -1,0 +1,8 @@
+checkpoint=cvae_beta_4.pt
+model_type=CVAE
+beta=4.0
+samples=3000
+latent_dim=16
+pca_variance_1=0.29130351543426514
+pca_variance_2=0.28249913454055786
+pca_variance_total=0.573802649974823
