@@ -4,12 +4,17 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .venv/
+.venv-*/
 venv/
 env/
 
 # Dataset MNIST telecharge automatiquement par torchvision (~64 Mo).
 # La demo web n'en a pas besoin : elle utilise backend/assets/mnist_samples.npz.
-data/
+# Ancre a la racine du depot (le "/" initial) : sans lui, ce motif attrapait
+# aussi projects/blaise_celeba/data/ (le module Python de chargement CelebA,
+# pas un dossier de donnees telechargees), qui aurait ete silencieusement
+# exclu du depot.
+/data/
 
 # Frontend
 node_modules/
