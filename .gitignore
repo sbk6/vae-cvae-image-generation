@@ -6,7 +6,7 @@ __pycache__/
 .venv/
 .venv-*/
 venv/
-env/
+env/ 
 
 # Dataset MNIST telecharge automatiquement par torchvision (~64 Mo).
 # La demo web n'en a pas besoin : elle utilise backend/assets/mnist_samples.npz.
