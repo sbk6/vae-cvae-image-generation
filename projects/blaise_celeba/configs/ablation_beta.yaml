@@ -1,0 +1,26 @@
+dataset:
+  name: celeba
+  image_size: [64, 64]
+  channels: 3
+  attributes: [Smiling, Male, Wavy_Hair]
+  seed: 42
+  # Sous-ensemble plus petit que les modeles principaux, meme choix que
+  # Sylvain sur MNIST : l'ablation entraine 3 modeles complets, il faut
+  # rester dans un budget de calcul raisonnable sur CPU. Le val/test
+  # restent representatifs (1500 images) pour une mesure fiable.
+  n_train: 4000
+  n_val: 1000
+  n_test: 1000
+ablation:
+  betas: [0.1, 1.0, 5.0]
+model:
+  type: vae
+  latent_dim: 64
+  hidden_channels: 32
+training:
+  seed: 42
+  batch_size: 64
+  epochs: 10
+  lr: 0.001
+  device: auto
+  output_dir: results/experiments/ablation

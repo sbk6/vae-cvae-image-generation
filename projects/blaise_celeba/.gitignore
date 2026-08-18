@@ -1,0 +1,26 @@
+# Environnement virtuel dedie a ce sous-projet.
+.venv/
+venv/
+
+# Cache Python.
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Cache local du sous-echantillon CelebA telecharge depuis Hugging Face.
+# Regenere par projects/blaise_celeba/data/dataset.py, pas versionne :
+# plusieurs centaines de Mo, et reproductible via la seed fixee dans le code.
+data_cache/
+
+# Checkpoints entraines : plusieurs dizaines de Mo chacun (latent plus grand
+# et images couleur que MNIST/Fashion-MNIST). Meme choix que David pour
+# Fashion-MNIST : livres separement, montes dans results/experiments/*/checkpoints
+# au moment de la demo plutot que verses dans git.
+results/experiments/**/checkpoints/
+*.pth
+*.pt
+
+# Systeme.
+.DS_Store
+Thumbs.db

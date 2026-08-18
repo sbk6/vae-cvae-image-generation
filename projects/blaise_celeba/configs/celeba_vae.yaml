@@ -1,0 +1,24 @@
+dataset:
+  name: celeba
+  image_size: [64, 64]
+  channels: 3
+  attributes: [Smiling, Male, Wavy_Hair]
+  seed: 42
+  # Sous-echantillon (l'enonce le demande explicitement pour CelebA) : voir
+  # data/dataset.py pour la justification du tirage aleatoire plutot qu'un
+  # prefixe, et le README pour la justification de la taille.
+  n_train: 8000
+  n_val: 1500
+  n_test: 1500
+model:
+  type: vae
+  latent_dim: 64
+  hidden_channels: 32
+training:
+  seed: 42
+  batch_size: 64
+  epochs: 18
+  lr: 0.001
+  beta: 1.0
+  device: auto
+  output_dir: results/experiments/vae_main
