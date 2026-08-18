@@ -1,0 +1,20 @@
+{
+  "vae": {
+    "reconstruction": 500.7480212402344,
+    "kl": 129.6717373453776,
+    "n_test": 1500
+  },
+  "cvae": {
+    "reconstruction": 479.1870860188802,
+    "kl": 119.363417582194,
+    "n_test": 1500,
+    "controllability": {
+      "per_attribute_accuracy": {
+        "Smiling": 0.6012499928474426,
+        "Male": 0.518750011920929,
+        "Wavy_Hair": 0.5625
+      },
+      "overall_accuracy": 0.5608333349227905
+    }
+  }
+}
