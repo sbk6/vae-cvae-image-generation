@@ -14,6 +14,7 @@ Deux strategies de decouverte coexistent, pour de bonnes raisons :
 """
 from __future__ import annotations
 
+import itertools
 import re
 import threading
 from dataclasses import dataclass, field
@@ -22,12 +23,13 @@ from typing import Dict, List, Optional
 
 import torch
 
-from backend.adapters import LOADERS, ModelAdapter
+from backend.adapters import LOADERS, ModelAdapter, blaise_celeba
 from src.training.trainer import get_device
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 FASHION_CHECKPOINT_DIR = ROOT_DIR / "projects" / "david_fashion_mnist" / "checkpoints"
+CELEBA_EXPERIMENTS_DIR = ROOT_DIR / "projects" / "blaise_celeba" / "results" / "experiments"
 
 MNIST_CLASS_NAMES = [str(index) for index in range(10)]
 FASHION_CLASS_NAMES = [
@@ -42,6 +44,13 @@ FASHION_CLASS_NAMES = [
     "Sac",
     "Bottine",
 ]
+
+# Attributs de conditionnement du CVAE CelebA. Doit rester synchronise avec
+# DEFAULT_ATTRIBUTES dans projects/blaise_celeba/data/dataset.py : c'est cette
+# liste (et son ordre) qui determine comment un entier class_label 0..7 se
+# traduit en combinaison d'attributs (voir BlaiseCelebaAdapter._combinations).
+CELEBA_ATTRIBUTES = ["Smiling", "Male", "Wavy_Hair"]
+CELEBA_ATTRIBUTE_LABELS_FR = {"Smiling": "souriant", "Male": "homme", "Wavy_Hair": "cheveux ondules"}
 
 
 @dataclass
@@ -209,6 +218,77 @@ def _fashion_models(checkpoint_dir: Path = FASHION_CHECKPOINT_DIR) -> List[Model
     return entries
 
 
+# -------------------------------------------------------------------- CelebA
+
+def _celeba_class_names() -> List[str]:
+    """Une entree par combinaison possible des 3 attributs (2**3 = 8), en francais.
+
+    L'ordre doit rester identique a celui produit par
+    `BlaiseCelebaAdapter._combinations` (itertools.product sur les memes
+    attributs, dans le meme ordre), sinon le libelle affiche au choix de
+    class_label ne correspondrait plus a l'image reellement generee.
+    """
+    names: List[str] = []
+    for combo in itertools.product([0, 1], repeat=len(CELEBA_ATTRIBUTES)):
+        active = [CELEBA_ATTRIBUTE_LABELS_FR[attr] for attr, value in zip(CELEBA_ATTRIBUTES, combo) if value]
+        names.append(", ".join(active) if active else "aucun attribut marque")
+    return names
+
+
+def _celeba_models(experiments_dir: Path = CELEBA_EXPERIMENTS_DIR) -> List[ModelEntry]:
+    """Decouvre les checkpoints CelebA presents sur le disque.
+
+    Meme raison que pour Fashion-MNIST : environ 2,2M parametres par
+    checkpoint (contre ~257k pour MNIST, un decodeur a 4 etages sur des
+    images couleur 64x64 coute plus cher), gitignores pour ne pas alourdir le
+    depot, deposes manuellement dans
+    projects/blaise_celeba/results/experiments/<run>/best_checkpoint.pth.
+    Contrairement a Fashion-MNIST, chaque checkpoint embarque sa propre
+    configuration (voir blaise_celeba.describe) : pas besoin de deviner le
+    type de modele depuis le nom du fichier.
+    """
+    if not experiments_dir.is_dir():
+        return []
+
+    entries: List[ModelEntry] = []
+    for checkpoint in sorted(experiments_dir.rglob("best_checkpoint.pth")):
+        try:
+            metadata = blaise_celeba.describe(checkpoint)
+        except Exception:
+            # Checkpoint corrompu ou incompatible : ignore plutot que de
+            # faire echouer le demarrage de toute la demo.
+            continue
+
+        conditional = metadata.get("model_type") == "cvae"
+        beta = metadata.get("beta")
+        run_name = checkpoint.parent.name  # "vae_main", "cvae_main", "beta_0.1", ...
+        kind = "CVAE" if conditional else "VAE"
+        label = f"{kind} β = {beta:g}" if beta is not None else f"{kind} ({run_name})"
+
+        entries.append(
+            ModelEntry(
+                model_id=f"celeba/{run_name}",
+                dataset_id="celeba",
+                label=label,
+                description=(
+                    f"{kind} CelebA, visages 64x64, attributs {', '.join(CELEBA_ATTRIBUTES)} "
+                    f"(checkpoint {run_name})."
+                ),
+                loader="blaise_celeba",
+                checkpoint_path=checkpoint,
+                family="main" if run_name in ("vae_main", "cvae_main") else "ablation",
+                beta=beta,
+                conditional=conditional,
+                # Seuls les runs d'ablation forment la serie comparable entre
+                # eux (meme sous-echantillon de 4000 images, memes 10 epochs).
+                # vae_main utilise 8000 images et 18 epochs : pas comparable,
+                # meme remarque que pour MNIST (voir _mnist_models).
+                ablation_series="vae" if run_name.startswith("beta_") else None,
+            )
+        )
+    return entries
+
+
 # ---------------------------------------------------------------- catalogue
 
 def build_datasets() -> Dict[str, DatasetEntry]:
@@ -228,6 +308,18 @@ def build_datasets() -> Dict[str, DatasetEntry]:
             class_names=FASHION_CLASS_NAMES,
             fixture_name="fashion_mnist_samples.npz",
             models=_fashion_models(),
+        ),
+        "celeba": DatasetEntry(
+            dataset_id="celeba",
+            label="CelebA",
+            description=(
+                "Visages 64x64 en couleur, sous-echantillon. Modeles de "
+                "projects/blaise_celeba/, sortie Tanh dans [-1, 1], CVAE "
+                f"conditionne par {', '.join(CELEBA_ATTRIBUTES)}."
+            ),
+            class_names=_celeba_class_names(),
+            fixture_name="celeba_samples.npz",
+            models=_celeba_models(),
         ),
     }
 

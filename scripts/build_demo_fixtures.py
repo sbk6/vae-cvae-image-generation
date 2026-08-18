@@ -6,19 +6,30 @@ couterait ~64 Mo par dataset et un telechargement au premier demarrage. On
 extrait donc une fois pour toutes quelques images par classe dans des .npz de
 ~20 Ko, versionnes avec le code.
 
-Les images sont stockees en uint8 [0, 255], **sans normalisation** : MNIST et
-Fashion-MNIST sont consommes par deux familles de modeles qui n'attendent pas
-la meme plage ([-1, 1] contre [0, 1]). La normalisation est appliquee cote API
-par l'adaptateur du modele cible.
+Les images sont stockees en uint8 [0, 255], **sans normalisation** : chaque
+famille de modeles attend sa propre plage ([-1, 1] pour MNIST et CelebA,
+[0, 1] pour Fashion-MNIST). La normalisation est appliquee cote API par
+l'adaptateur du modele cible.
+
+CelebA est un cas a part : contrairement a MNIST/Fashion-MNIST (telecharges
+a la volee via torchvision), ses images ne sont pas rechargees ici. Le
+fixture est construit a partir du cache local deja produit par
+projects/blaise_celeba/ (data_cache/test_*.npz), pour ne pas faire dependre
+ce script partage de la librairie `datasets` (Hugging Face), qui n'est
+installee que dans l'environnement virtuel du sous-projet CelebA. Il faut
+donc avoir lance au moins un entrainement ou une evaluation CelebA au
+prealable pour que ce cache existe.
 
 Usage :
-    python scripts/build_demo_fixtures.py                  # les deux datasets
+    python scripts/build_demo_fixtures.py                  # tous les datasets
     python scripts/build_demo_fixtures.py --dataset mnist
+    python scripts/build_demo_fixtures.py --dataset celeba
     python scripts/build_demo_fixtures.py --per-class 16
 """
 from __future__ import annotations
 
 import argparse
+import itertools
 import sys
 from pathlib import Path
 
@@ -29,6 +40,7 @@ import numpy as np
 from torchvision import datasets
 
 ASSETS_DIR = ROOT_DIR / "backend" / "assets"
+CELEBA_CACHE_DIR = ROOT_DIR / "projects" / "blaise_celeba" / "data_cache"
 
 DATASETS = {
     "mnist": {
@@ -87,12 +99,67 @@ def build_fixture(dataset_key: str, per_class: int, num_classes: int = 10) -> Pa
     return output_path
 
 
+def _find_celeba_test_cache() -> Path:
+    """Le nom exact du fichier de cache depend de n_test/seed/attributs (voir
+    projects/blaise_celeba/data/dataset.py, _cache_path) : on prend le plus
+    recent plutot que de deviner le nom complet ici."""
+    candidates = sorted(CELEBA_CACHE_DIR.glob("test_*.npz"), key=lambda path: path.stat().st_mtime)
+    if not candidates:
+        raise RuntimeError(
+            "Aucun cache CelebA trouve dans projects/blaise_celeba/data_cache/. "
+            "Lancer d'abord un entrainement ou une evaluation CelebA, par exemple : "
+            "cd projects/blaise_celeba && .venv/bin/python -m training.train --config configs/celeba_vae.yaml"
+        )
+    return candidates[-1]
+
+
+def build_celeba_fixture(per_combo: int) -> Path:
+    """Construit le fixture CelebA a partir du cache local (voir docstring du module)."""
+    cache_path = _find_celeba_test_cache()
+    with np.load(cache_path) as data:
+        images = data["images"]          # (N, H, W, 3) uint8
+        attributes = data["attributes"]  # (N, num_attrs) float32 dans {0, 1}
+
+    num_attrs = attributes.shape[1]
+    combos = list(itertools.product([0, 1], repeat=num_attrs))
+
+    selected_images, selected_labels = [], []
+    for combo_index, combo in enumerate(combos):
+        matches = np.where((attributes == np.array(combo, dtype=np.float32)).all(axis=1))[0]
+        for match_index in matches[:per_combo]:
+            selected_images.append(images[match_index])
+            selected_labels.append(combo_index)
+
+    counts = np.bincount(selected_labels, minlength=len(combos))
+    under_represented = [i for i, count in enumerate(counts) if count < per_combo]
+    if under_represented:
+        print(
+            f"Attention : moins de {per_combo} exemples de test pour les combinaisons "
+            f"{[combos[i] for i in under_represented]} (cache trop petit ou attribut rare)."
+        )
+
+    images_arr = np.stack(selected_images)
+    labels_arr = np.array(selected_labels, dtype=np.int64)
+
+    output_path = ASSETS_DIR / "celeba_samples.npz"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(output_path, images=images_arr, labels=labels_arr)
+
+    size_kb = output_path.stat().st_size / 1024
+    print(f"{'CelebA':15s} -> {output_path.name}")
+    print(
+        f"                   {images_arr.shape[0]} images ({per_combo} par combinaison d'attributs), "
+        f"{images_arr.shape[1]}x{images_arr.shape[2]}x3, {size_kb:.1f} Ko"
+    )
+    return output_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--per-class", type=int, default=12, help="Nombre d'images par classe (defaut : 12)")
+    parser.add_argument("--per-class", type=int, default=12, help="Nombre d'images par classe/combinaison (defaut : 12)")
     parser.add_argument(
         "--dataset",
-        choices=sorted(DATASETS) + ["all"],
+        choices=sorted(DATASETS) + ["celeba", "all"],
         default="all",
         help="Dataset a generer (defaut : all)",
     )
@@ -101,9 +168,12 @@ def main() -> None:
     if args.per_class < 1:
         parser.error("--per-class doit etre >= 1")
 
-    targets = sorted(DATASETS) if args.dataset == "all" else [args.dataset]
+    targets = sorted(list(DATASETS) + ["celeba"]) if args.dataset == "all" else [args.dataset]
     for dataset_key in targets:
-        build_fixture(dataset_key, args.per_class)
+        if dataset_key == "celeba":
+            build_celeba_fixture(args.per_class)
+        else:
+            build_fixture(dataset_key, args.per_class)
 
 
 if __name__ == "__main__":
