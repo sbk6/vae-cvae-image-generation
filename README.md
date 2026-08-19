@@ -1,312 +1,355 @@
-# VAE / CVAE pour la génération d'images — Compte rendu de séance
+# VAE / CVAE pour la génération d'images
 
-Bonsoir Monsieur,
+Implémentation en PyTorch d'un **Variational Autoencoder (VAE)** et de sa variante conditionnelle, le **CVAE**, appliqués à la génération et à la reconstruction d'images de chiffres manuscrits (MNIST). Le projet inclut l'entraînement, une étude d'ablation sur l'hyperparamètre β, la visualisation de l'espace latent, une interpolation latente, une comparaison quantitative entre les deux modèles, et un suivi des expériences avec MLflow.
 
-Nous travaillons sur le sujet **VAE conditionnel pour la génération d'images**. Cette séance, nous avons repris le code existant, corrigé un bug important, puis **réellement entraîné** (et pas seulement testé en mode rapide) un VAE et un CVAE sur **MNIST**, mené une **étude d'ablation sur le poids β**, produit les **visualisations demandées** (espace latent, interpolation) et fait une **comparaison chiffrée** entre les deux modèles. Les deux autres datasets de l'énoncé (Fashion-MNIST, CelebA) ne sont pas encore commencés : voir la section "Prochaines étapes".
+Ce document décrit le projet de bout en bout : le sujet traité, la démarche suivie, la manière d'exécuter le code, et les résultats obtenus.
 
-Ce document est écrit pour être lu tel quel en séance : chaque résultat renvoie vers le fichier exact où le voir, et est accompagné de son interprétation.
+## Sommaire
+
+1. [Contexte et objectifs](#1-contexte-et-objectifs)
+2. [Résumé des résultats](#2-résumé-des-résultats)
+3. [Installation et prise en main](#3-installation-et-prise-en-main)
+4. [Structure du dépôt](#4-structure-du-dépôt)
+5. [Approche technique](#5-approche-technique)
+6. [Protocole expérimental](#6-protocole-expérimental)
+7. [Résultats détaillés](#7-résultats-détaillés)
+8. [Suivi des expériences avec MLflow](#8-suivi-des-expériences-avec-mlflow)
+9. [Limites connues et travaux futurs](#9-limites-connues-et-travaux-futurs)
+10. [Difficultés techniques rencontrées](#10-difficultés-techniques-rencontrées)
+11. [Organisation de l'équipe](#11-organisation-de-léquipe)
+12. [Glossaire](#12-glossaire)
+13. [Commandes de référence](#13-commandes-de-référence)
+14. [Documents complémentaires](#14-documents-complémentaires)
 
 ---
 
-## 1. Ce que nous avons compris du sujet
+## 1. Contexte et objectifs
 
-Le sujet demande de construire un modèle génératif capable de :
-- reconstruire une image à partir d'une représentation compressée (**espace latent**),
-- générer de nouvelles images en échantillonnant dans cet espace latent,
-- **contrôler** cette génération avec une étiquette de classe (le chiffre demandé), ce que le VAE classique ne sait pas faire mais que le CVAE sait faire.
+Ce projet répond à un sujet académique intitulé **"VAE conditionnel pour la génération d'images"**, dont l'objectif est d'implémenter un autoencodeur variationnel (VAE) et sa variante conditionnelle (CVAE), puis de comparer leur capacité à générer des images, avec ou sans contrôle sur la classe produite.
 
-L'énoncé demande explicitement une **étude d'ablation sur β** (le poids du terme KL dans la loss ELBO), une **visualisation de l'espace latent**, une **interpolation** entre deux exemples, et une **évaluation quantitative** de la génération.
+Références du sujet :
+- Kingma & Welling, *Auto-Encoding Variational Bayes* (2013) — [arxiv.org/abs/1312.6114](https://arxiv.org/abs/1312.6114)
+- Sohn et al., *Learning Structured Output Representation using Deep Conditional Generative Models* (2015) — [NeurIPS](https://proceedings.neurips.cc/paper/2015/hash/8d55a249e6baa5c06772297520da2051-Abstract.html)
 
-## 2. Ce qui a été fait cette séance
+**Exigences du sujet :**
+- Implémenter le VAE (encodeur, reparamétrisation, décodeur, loss ELBO = reconstruction + KL).
+- Implémenter le CVAE (label injecté à l'encodeur et au décodeur).
+- Mener une étude d'ablation sur l'effet du poids du terme KL (β) sur la qualité de reconstruction vs. la structure de l'espace latent.
+- Visualiser l'espace latent (projection 2D) et l'interpolation entre deux exemples.
+- Évaluer quantitativement la qualité de génération.
+- Le sujet prévoit trois jeux de données : **MNIST**, **Fashion-MNIST**, **CelebA**.
 
-- **Correction d'un bug important** : le VAE et le CVAE écrivaient leur checkpoint dans le même fichier (`reports/best_checkpoint.pth`). Résultat : le `CVAE`, entraîné en mode "test rapide" (1 epoch, 50 batches), avait écrasé le `VAE` correctement entraîné. Les figures précédentes (`cvae_grid.png`) venaient donc d'un modèle quasiment pas entraîné. Chaque expérience a maintenant son propre dossier (`reports/experiments/<nom>/`), donc ce problème ne peut plus se reproduire.
-- **Vrai entraînement du VAE** : 10 epochs sur les 60 000 images MNIST (54 000 train / 6 000 validation), latent de dimension 16.
-- **Vrai entraînement du CVAE** : mêmes réglages, avec le label injecté comme condition.
-- **Étude d'ablation sur β** : 3 valeurs (0.1, 1.0, 5.0), même architecture, même seed, 6 epochs chacune.
-- **Visualisation de l'espace latent** en 2D avec t-SNE, pour le VAE et pour le CVAE.
-- **Interpolation** entre deux exemples de classes différentes (3→8 et 1→7) dans l'espace latent du VAE.
-- **Comparaison quantitative** VAE vs CVAE : perte de reconstruction, KL, et une mesure de "contrôlabilité" du CVAE (voir section 6.4 — résultat surprenant et instructif).
-- Réécriture des scripts pour qu'ils **chargent un modèle déjà entraîné** au lieu de le ré-entraîner à chaque fois qu'on veut une figure.
+**Périmètre couvert par ce dépôt à ce jour :** l'ensemble des exigences ci-dessus a été traité sur **MNIST**. Fashion-MNIST et CelebA ne sont pas encore implémentés (voir [section 9](#9-limites-connues-et-travaux-futurs)).
 
-Ce qui n'est **pas** fait : Fashion-MNIST et CelebA (le code a des points d'extension prévus mais pas implémentés), la démonstration web, le score FID.
+## 2. Résumé des résultats
 
-## 3. Répartition des tâches dans le groupe de 4
+Pour un lecteur pressé, voici l'essentiel :
 
-*(Rôles génériques ci-dessous — à remplacer par les prénoms réels de chacun.)*
+- Un VAE et un CVAE ont été entraînés sur les 70 000 images de MNIST (54 000 train / 6 000 validation / 10 000 test).
+- Le CVAE génère correctement la classe demandée dans la grande majorité des cas (`reports/figures/cvae_grid.png`).
+- L'étude d'ablation sur β (valeurs 0.1, 1.0, 5.0), **validée statistiquement sur 3 seeds par valeur**, montre que **β = 1.0 est le meilleur compromis** : β trop faible régularise mal l'espace latent, β trop élevé provoque un effondrement de l'espace latent (*posterior collapse*), visible aussi bien dans les métriques que dans les images générées.
+- Fait notable : le VAE, bien qu'il ne reçoive jamais l'information de classe, structure spontanément son espace latent par chiffre (visible en projection t-SNE) ; le CVAE, lui, ne le fait pas, car cette information lui est donnée directement.
+- Les modèles principaux et l'étude d'ablation ont été revalidés avec plusieurs seeds pour garantir que les résultats sont reproductibles et non liés au hasard de l'initialisation.
+- L'ensemble des entraînements (15 au total) est suivi et consultable via **MLflow**.
 
-- **Membre 1** — données et socle technique : chargement MNIST, fichiers de configuration YAML, structure du dépôt.
-- **Membre 2** — modèles : implémentation du VAE, du CVAE et de la loss ELBO.
-- **Membre 3** — entraînement et expériences : lancement des runs, étude d'ablation sur β, évaluation chiffrée.
-- **Membre 4** — visualisation et restitution : figures (t-SNE, interpolation, grilles), documentation, préparation de la présentation orale.
+Le détail de chaque résultat, avec les fichiers exacts à consulter, est donné en [section 7](#7-résultats-détaillés).
 
-Comme pour la séance précédente, chacun garde un rôle principal mais l'ensemble du groupe relit et challenge le travail des autres avant de le considérer comme acquis.
+## 3. Installation et prise en main
 
-## 4. Architecture du dépôt (mise à jour)
+### Prérequis
+- Python 3.11
+- Pas de GPU requis (le projet a été développé et testé entièrement sur CPU)
+
+### Installation
+
+```bash
+python -m venv .venv
+source .venv/Scripts/activate      # Windows PowerShell : .venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+Dépendances principales : `torch`, `torchvision`, `numpy`, `matplotlib`, `pyyaml`, `scikit-learn`, `mlflow`, `pytest`.
+
+### Vérification de l'installation
+
+```bash
+python -m pytest -q
+```
+
+Le dépôt contient 8 tests unitaires couvrant les formes des modèles, la loss ELBO, le chargement des données et une itération d'entraînement.
+
+### Test rapide (sans attendre un entraînement complet)
+
+```bash
+python -m src.training.train --config configs/mnist_vae.yaml --smoke-test
+```
+
+## 4. Structure du dépôt
 
 ```
-configs/                  fichiers YAML (dataset, modèle, entraînement)
-  mnist_vae.yaml           config du VAE principal
-  mnist_cvae.yaml          config du CVAE principal
-  ablation_beta.yaml        config de l'étude d'ablation sur beta
+configs/                       fichiers de configuration YAML
+  mnist_vae.yaml                 VAE principal
+  mnist_cvae.yaml                 CVAE principal
+  ablation_beta.yaml               étude d'ablation sur beta
 
 src/
-  data/datasets.py          chargement MNIST (+ points d'extension Fashion-MNIST/CelebA)
-  models/vae.py              le VAE
-  models/cvae.py             le CVAE (conditionnement générique one-hot / multi-label)
-  models/layers.py           blocs convolutifs partagés
-  losses/elbo.py              perte ELBO = reconstruction + beta * KL
-  training/trainer.py         boucle d'entraînement, validation, checkpoint, logs CSV
-  training/train.py           point d'entrée CLI (choisit VAE ou CVAE selon le YAML)
-  visualization/latent.py     projection t-SNE de l'espace latent
-  visualization/interpolation.py  interpolation entre deux images dans l'espace latent
-  evaluation/                dossier réservé aux futures métriques (FID, etc.)
+  data/datasets.py                chargement de MNIST, points d'extension Fashion-MNIST/CelebA
+  models/vae.py                    modèle VAE
+  models/cvae.py                   modèle CVAE (conditionnement one-hot ou multi-label)
+  models/layers.py                 blocs convolutifs partagés
+  losses/elbo.py                   loss ELBO = reconstruction + beta * KL
+  training/trainer.py              boucle d'entraînement, validation, checkpoint, logs, MLflow
+  training/train.py                point d'entrée CLI
+  visualization/latent.py          projection t-SNE de l'espace latent
+  visualization/interpolation.py   interpolation entre deux images dans l'espace latent
+  evaluation/                      réservé aux futures métriques (FID, etc.)
 
 scripts/
-  run_ablation.py            lance l'étude d'ablation et génère tableau + courbe
-  generate_cvae_grid.py       grille d'échantillons conditionnés (charge un modèle déjà entraîné)
-  generate_vae_recon_grid.py  grille reconstruction + grille d'échantillons libres du VAE
-  evaluate.py                 comparaison quantitative VAE vs CVAE
-  inspect_dataloader.py       vérifie visuellement que les données sont bien chargées
+  run_ablation.py                  étude d'ablation sur beta (1 seed)
+  run_ablation_seed_worker.py      un run d'ablation pour un couple (beta, seed) donné
+  aggregate_ablation_seeds.py      agrège les runs multi-seed de l'ablation
+  run_main_seed_worker.py          un run des modèles principaux pour un seed donné
+  backfill_mlflow.py               réimporte dans MLflow des runs déjà exécutés
+  generate_cvae_grid.py            grille d'échantillons conditionnés par classe
+  generate_vae_recon_grid.py       grille de reconstruction + grille d'échantillons libres
+  evaluate.py                      comparaison quantitative VAE vs CVAE
+  inspect_dataloader.py            vérification visuelle du chargement des données
 
 reports/
   experiments/
-    vae_main/                 VAE principal (10 epochs, données complètes) — logs + checkpoint
-    cvae_main/                 CVAE principal (10 epochs, données complètes) — logs + checkpoint
-    ablation/beta_0.1/, beta_1.0/, beta_5.0/   un dossier par valeur de beta testée
-    ablation/results.json       résultats bruts de l'ablation
-    comparison.json             résultats bruts de la comparaison VAE vs CVAE
-  figures/                     toutes les images produites (voir section 6)
-  best_checkpoint.pth, training_log.csv, figures/cvae_grid_8.png
-                                fichiers historiques d'avant la correction du bug,
-                                conservés pour traçabilité mais à ne plus utiliser
+    vae_main/, cvae_main/            modèles principaux (10 epochs, données complètes)
+    ablation/beta_0.1/, beta_1.0/, beta_5.0/     ablation, 1 seed
+    ablation_seeds/beta_<b>_seed_<s>/            ablation, 3 seeds x 3 betas
+    vae_seeds/seed_<s>/, cvae_seeds/seed_<s>/    modèles principaux, 3 seeds
+    ablation/results.json, comparison.json       résultats bruts
+  figures/                           toutes les figures produites (détail en section 7)
 
 docs/
-  RESULTATS.md                 tableau d'ablation généré automatiquement par le script
-  explanations.md, presentation_seance_1.md   comptes rendus de la séance précédente (dépassés
-                                sur les chiffres, gardés pour la partie pédagogique en français)
+  RESULTATS.md                     tableaux de résultats générés automatiquement par les scripts
+  explanations.md                  documentation technique complémentaire (concepts, FAQ)
+  presentation_groupe.md           script de présentation orale du projet
 
-tests/                        tests unitaires (8 tests, tous verts)
+mlflow.db                        base SQLite contenant l'historique des runs MLflow
+tests/                           suite de tests unitaires
 ```
 
-## 5. Comment le code fonctionne, en mots simples
+## 5. Approche technique
 
-### 5.1 Le VAE (`src/models/vae.py`)
+### 5.1 Le VAE
 
-Une image passe dans l'**encodeur** (convolutions) qui produit deux vecteurs, `mu` et `logvar` : la moyenne et la log-variance d'une distribution gaussienne. On tire un point `z` dans cette distribution (c'est la **reparamétrisation**, `z = mu + eps * exp(0.5*logvar)`, qui permet de garder la rétropropagation possible malgré le tirage aléatoire). Le **décodeur** reconstruit ensuite une image à partir de `z`.
+Une image passe dans un **encodeur** convolutif qui produit deux vecteurs, `mu` et `logvar` : la moyenne et la log-variance d'une distribution gaussienne. Un point `z` est tiré dans cette distribution via la **reparamétrisation** `z = mu + eps * exp(0.5 * logvar)` (avec `eps` aléatoire), une astuce qui permet de rétropropager le gradient malgré le tirage aléatoire. Un **décodeur** convolutif reconstruit ensuite une image à partir de `z`.
 
-### 5.2 Le CVAE (`src/models/cvae.py`)
+### 5.2 Le CVAE
 
-Même principe, mais le label (classe du chiffre, encodé en one-hot) est ajouté :
-- en entrée de l'encodeur (concaténé à l'image comme des canaux supplémentaires),
-- en entrée du décodeur (concaténé au vecteur latent `z`).
+Même architecture, avec le label de classe (encodé en one-hot) ajouté :
+- en entrée de l'encodeur, sous forme de canaux supplémentaires concaténés à l'image ;
+- en entrée du décodeur, concaténé au vecteur latent `z`.
 
-Ainsi le décodeur reçoit toujours deux informations : "quelle forme dans l'espace latent" et "quelle classe". Pour générer un `7`, on lui donne un `z` aléatoire **et** la condition "classe 7".
+Le décodeur reçoit donc systématiquement deux informations : la forme encodée dans l'espace latent, et la classe demandée. L'implémentation (`src/models/cvae.py`) est générique et supporte aussi bien un conditionnement `one_hot` (une classe active) qu'un conditionnement `multi_label` (plusieurs attributs actifs, utile pour un futur passage à CelebA).
 
-### 5.3 La perte ELBO (`src/losses/elbo.py`)
+### 5.3 La fonction de perte (ELBO)
 
 ```
 loss = reconstruction + beta * KL
 ```
 
-- **reconstruction** : erreur quadratique moyenne entre l'image d'origine et l'image reconstruite (plus c'est bas, mieux c'est).
-- **KL** : distance entre la distribution latente apprise `q(z|x)` et une gaussienne standard `N(0, I)` (le "prior"). Elle force l'espace latent à rester régulier, ce qui est ce qui permet ensuite de générer de nouvelles images en tirant `z` au hasard.
-- **beta** : un curseur entre les deux objectifs. C'est le paramètre étudié dans l'ablation (section 7).
+- **reconstruction** : erreur quadratique moyenne (MSE) entre l'image d'entrée et l'image reconstruite.
+- **KL** : divergence de Kullback-Leibler entre la distribution latente apprise `q(z|x)` et une gaussienne standard `N(0, I)` (le prior). Elle force l'espace latent à rester régulier, condition nécessaire pour pouvoir ensuite générer de nouvelles images en tirant `z` au hasard dans le prior.
+- **beta** : coefficient de pondération du terme KL. C'est le paramètre étudié dans l'ablation ([section 7.4](#74-étude-dablation-sur-β)).
 
-## 6. Où voir les résultats et comment les interpréter
+### 5.4 Choix d'architecture et d'hyperparamètres
 
-### 6.1 Grilles d'images
-
-| Fichier | Ce que ça montre | Comment le lire |
+| Paramètre | Valeur | Justification |
 |---|---|---|
-| `reports/figures/mnist_real_grid.png` | 16 vrais chiffres MNIST | Référence visuelle, sert de "vérité terrain". |
-| `reports/figures/vae_reconstruction_grid.png` | Ligne du haut = images réelles, ligne du bas = leur reconstruction par le VAE | Si les deux lignes se ressemblent, le VAE a bien appris à compresser/décompresser. Un léger flou est normal (propre à la loss MSE + KL). |
-| `reports/figures/vae_random_samples_grid.png` | 64 images générées en tirant `z ~ N(0, I)`, **sans aucune condition** | C'est la génération "libre" du VAE : on ne choisit pas la classe, le modèle génère ce qu'il veut. |
-| `reports/figures/cvae_grid.png` | Une ligne par classe (0 à 9), chaque ligne générée en demandant explicitement cette classe au CVAE | **C'est la figure la plus importante pour juger la contrôlabilité.** Chaque ligne doit ressembler au chiffre correspondant. Verdict après inspection : les classes 0, 1, 2, 7, 8, 9 sont clairement reconnaissables et cohérentes sur toute la ligne ; certaines lignes (3, 4, 5, 6) contiennent quelques échantillons plus ambigus ou un peu déformés — normal pour un entraînement de seulement 10 epochs sur CPU. |
+| `latent_dim` | 16 | Suffisant pour capturer la variabilité des 10 classes de MNIST tout en forçant une réelle compression. |
+| `hidden_channels` | 32 | Largeur de couche standard pour un problème aussi simple que MNIST (28×28, niveaux de gris), permet de rester rapide à entraîner sur CPU. |
+| `batch_size` | 128 | Valeur courante équilibrant vitesse et stabilité de l'optimisation. |
+| `lr` (Adam) | 0.001 | Valeur par défaut usuelle pour Adam, converge de façon fiable sans réglage fin nécessaire sur ce problème. |
+| `beta` | 1.0 | Retenu après étude d'ablation, voir section 7.4. |
+| `epochs` (modèles principaux) | 10 | Choisi après observation de la courbe de perte, qui se stabilise à partir de l'epoch 7-8 ; validé a posteriori par un ré-entraînement à 20 epochs (section 7.6) montrant un gain marginal. |
 
-### 6.2 Espace latent (t-SNE)
+## 6. Protocole expérimental
 
-| Fichier | Ce que ça montre |
-|---|---|
-| `reports/figures/latent_tsne_vae.png` | Position 2D (projection t-SNE) de 2000 images de test dans l'espace latent du VAE, colorées par leur vraie classe. |
-| `reports/figures/latent_tsne_cvae.png` | Même chose pour le CVAE. |
+Trois familles d'expériences ont été menées, toutes sur MNIST (torchvision, transformation `Normalize((0.5,), (0.5,))`, split 90/10 du train set officiel pour train/val, test set officiel séparé) :
 
-**Interprétation, et c'est le résultat le plus intéressant de la séance :** dans le VAE, les points se regroupent nettement par couleur (par classe), **alors que le VAE n'a jamais reçu le label pendant l'entraînement**. Le modèle a spontanément appris à séparer les chiffres dans son espace latent, simplement parce que c'est la façon la plus efficace de bien reconstruire des images très différentes les unes des autres. Dans le CVAE, à l'inverse, les couleurs sont beaucoup plus mélangées : c'est cohérent, puisque le CVAE reçoit déjà la classe en entrée du décodeur, il n'a plus besoin de coder l'identité du chiffre dans `z` — celui-ci se spécialise plutôt sur le **style d'écriture** (inclinaison, épaisseur du trait...).
+1. **Modèles principaux** (`vae_main`, `cvae_main`) : un VAE et un CVAE entraînés sur les données complètes (54 000 images), 10 epochs, β=1.0, seed=42. Ce sont les modèles utilisés pour produire les figures de reconstruction, de génération et de visualisation de l'espace latent.
+2. **Étude d'ablation sur β** : le même VAE entraîné avec β ∈ {0.1, 1.0, 5.0}, sur un sous-ensemble de 12 000 images d'entraînement (le jeu de validation reste complet) pour limiter le temps de calcul sur CPU. Chaque valeur de β a été testée avec 3 seeds différents (0, 42, 123) sur 20 epochs, afin de vérifier que les écarts observés sont bien dus à β et non au hasard de l'initialisation.
+3. **Validation multi-seed des modèles principaux** : `vae_main` et `cvae_main` ont été réentraînés chacun avec 3 seeds (0, 42, 123), sur les données complètes, à 20 epochs, pour confirmer que leurs résultats sont reproductibles.
 
-### 6.3 Interpolation dans l'espace latent
+Toutes les expériences sont reproductibles : la graine aléatoire (seed) fixe l'initialisation des poids et l'ordre des mini-lots (`src/utils/seed.py`), et chaque expérience écrit ses résultats dans un dossier de sortie dédié (`reports/experiments/<nom>/`) pour éviter toute collision entre runs.
 
-| Fichier | Ce que ça montre |
-|---|---|
-| `reports/figures/interpolation_vae_3_to_8.png` | 10 images, de gauche à droite, en interpolant linéairement entre le `z` d'un vrai 3 et le `z` d'un vrai 8. |
-| `reports/figures/interpolation_vae_1_to_7.png` | Même chose entre un 1 et un 7. |
+## 7. Résultats détaillés
 
-**Interprétation :** la transition est progressive, pas de "saut" brutal au milieu — c'est le signe que l'espace latent est continu et bien structuré (grâce au terme KL qui le rapproche d'une gaussienne). C'est exactement ce que l'énoncé demande de vérifier.
+### 7.1 Reconstruction et génération
 
-### 6.4 Comparaison chiffrée (`reports/experiments/comparison.json`)
-
-Mesuré sur les 10 000 images du test set MNIST, avec les modèles principaux (`vae_main`, `cvae_main`) :
-
-| Modèle | Reconstruction (test) | KL (test) |
+| Figure | Contenu | Lecture |
 |---|---|---|
-| VAE | 677.35 | 17.12 |
-| CVAE | 676.56 | 13.89 |
+| `reports/figures/mnist_real_grid.png` | 16 images réelles de MNIST | Référence visuelle. |
+| `reports/figures/vae_reconstruction_grid.png` | Haut : images réelles ; bas : leur reconstruction par le VAE | Une bonne correspondance entre les deux lignes indique que l'encodeur/décodeur a bien appris. Un léger flou est un effet normal de la loss MSE + KL, pas une anomalie. |
+| `reports/figures/vae_random_samples_grid.png` | 64 images générées en tirant `z ~ N(0, I)`, sans condition | Génération "libre" du VAE : la classe produite n'est pas contrôlable. |
+| `reports/figures/cvae_grid.png` | Une ligne par classe (0 à 9), chaque ligne générée avec la classe demandée explicitement au CVAE | Figure clé pour juger la contrôlabilité : chaque ligne doit ressembler au chiffre demandé. Les classes 0, 1, 2, 7, 8, 9 sont nettes et cohérentes ; certaines lignes (3, 4, 5, 6) contiennent des échantillons plus ambigus, cohérent avec un entraînement de 10 epochs sur CPU. |
 
-Les deux modèles reconstruisent presque aussi bien l'un que l'autre ; le CVAE a un KL légèrement plus bas, cohérent avec l'idée qu'il a moins besoin de "travailler" son espace latent puisque la classe est donnée à part.
+### 7.2 Espace latent
 
-**Contrôlabilité du CVAE — un résultat qu'il faut savoir expliquer en séance :**
-Nous avons essayé de mesurer automatiquement si le CVAE génère bien la classe demandée, sans passer par une simple inspection visuelle. Faute d'un classifieur pré-entraîné disponible, nous avons utilisé un classifieur "plus proche centroïde" (le centroïde d'une classe = image moyenne des vrais chiffres de cette classe). Résultat : **29,4 % de précision globale**, avec de fortes disparités selon les classes (100 % pour le "0", 0 % pour le "1", "4", "5", "7", "9").
+| Figure | Contenu |
+|---|---|
+| `reports/figures/latent_tsne_vae.png` | Projection t-SNE en 2D de 2000 images de test dans l'espace latent du VAE, colorées par classe réelle. |
+| `reports/figures/latent_tsne_cvae.png` | Idem pour le CVAE. |
 
-Ce chiffre **contredit clairement l'inspection visuelle de `cvae_grid.png`**, où la plupart des lignes sont pourtant reconnaissables. Nous avons creusé la question : en testant le même classifieur "plus proche centroïde" sur de **vrais** chiffres du test set (pas des chiffres générés), il obtient 82 % de précision — donc la méthode est correcte en soi. Le problème vient d'ailleurs : les images générées par un VAE/CVAE sont **légèrement floues** (conséquence connue de la loss MSE + KL), et cette méthode de classification par distance de pixels est très sensible au flou et à la finesse du trait, en particulier pour les chiffres fins comme 1, 4, 7, 9 (un léger flou les rapproche, en distance de pixels, de classes plus "pleines" comme 0 ou 8, même si un humain les reconnaît sans problème). **Conclusion : notre proxy quantitatif sous-estime la contrôlabilité réelle du CVAE ; l'inspection visuelle de la grille reste, à ce stade, la preuve la plus fiable.** Un vrai classifieur (petit CNN entraîné sur MNIST) donnerait une mesure plus juste — c'est noté dans les prochaines étapes.
+**Observation principale :** dans le VAE, les points se regroupent nettement par classe **bien que le label ne soit jamais fourni au modèle** — le réseau apprend spontanément à séparer les chiffres dans l'espace latent, cette organisation étant la stratégie la plus efficace pour bien reconstruire des images très différentes. Dans le CVAE, les classes restent mélangées dans l'espace latent : cohérent, puisque l'information de classe est déjà fournie séparément au décodeur, l'espace latent se spécialise alors sur autre chose (le style d'écriture : inclinaison, épaisseur du trait...).
 
-Pour le VAE non conditionnel, nous avons aussi regardé, sur 1000 échantillons générés librement, à quelle classe (toujours via le même proxy) ils ressemblent le plus : seules 4 classes sur 10 apparaissent (0, 2, 3, 8), très majoritairement 0 et 2. Cela illustre bien la différence fondamentale avec le CVAE : le VAE classique ne garantit aucune couverture homogène des classes quand on génère librement, alors que le CVAE permet de choisir la classe voulue.
+### 7.3 Interpolation latente
 
-## 7. Étude d'ablation sur β (livrable demandé par l'énoncé)
+| Figure | Contenu |
+|---|---|
+| `reports/figures/interpolation_vae_3_to_8.png` | Interpolation linéaire, en 10 étapes, entre le `z` d'un vrai 3 et le `z` d'un vrai 8. |
+| `reports/figures/interpolation_vae_1_to_7.png` | Idem entre un 1 et un 7. |
 
-Protocole : même VAE (latent_dim=16, hidden_channels=32), même seed, 6 epochs, sur un sous-ensemble de 12 000 images d'entraînement (validation complète sur 6 000 images). Le sous-échantillonnage du train set est un choix assumé pour limiter le temps de calcul sur un entraînement CPU uniquement — voir section 9.
+La transition entre les deux classes est progressive, sans saut brutal, ce qui indique que l'espace latent appris est continu — propriété directement liée à la régularisation par le terme KL.
 
-| β | Reconstruction (val) | KL (val) | Loss totale (val) |
-|---|---|---|---|
-| 0.1 | 680.87 | 39.47 | 684.82 |
-| 1.0 | 691.83 | 15.37 | 707.20 |
-| 5.0 | 725.11 | 0.56 | 727.90 |
+### 7.4 Étude d'ablation sur β
 
-Courbe : `reports/figures/ablation_beta_curve.png`
-Comparaison visuelle des reconstructions selon β : `reports/figures/ablation_beta_reconstruction_comparison.png` (ligne du haut = images réelles, puis β=0.1, β=1.0, β=5.0)
+**Résultat consolidé (3 betas × 3 seeds, 20 epochs, sous-ensemble de 12 000 images) :**
 
-**Lecture :**
-- **β = 0.1** : la reconstruction est la meilleure (proche de l'original, visuellement net sur `ablation_beta_reconstruction_comparison.png`), mais le KL explose (39.5) : l'espace latent est peu régularisé, donc moins fiable pour générer une image à partir d'un `z` tiré au hasard (le prior N(0,I) ne correspond pas bien à ce que l'encodeur produit réellement).
-- **β = 5.0** : le KL s'effondre presque à zéro (0.56) — symptôme classique de **posterior collapse** : le modèle arrête d'utiliser l'espace latent. La figure de comparaison le montre très clairement : les reconstructions à β=5.0 sont quasiment des taches grises informes, le décodeur ignore largement `z` et produit presque toujours la même image floue.
-- **β = 1.0** : compromis clair entre les deux : reconstruction encore raisonnable (691.8, contre 680.9 pour β=0.1, soit une perte de qualité modérée) et KL significatif mais pas explosif (15.4), donc un espace latent réellement structuré et exploitable pour la génération.
+| β | Reconstruction (moyenne ± écart-type) | KL (moyenne ± écart-type) |
+|---|---|---|
+| 0.1 | 672.33 ± 0.24 | 40.75 ± 0.81 |
+| 1.0 | 682.98 ± 0.14 | 16.62 ± 0.08 |
+| 5.0 | 724.77 ± 0.26 | 0.21 ± 0.06 |
 
-**Meilleur paramètre retenu : β = 1.0.** C'est le choix que nous avons utilisé pour les modèles principaux (`vae_main`, `cvae_main`). Il n'écrase pas le signal latent (contrairement à β=5.0) et ne laisse pas l'espace latent devenir irrégulier au point de nuire à la génération (contrairement à β=0.1). Si l'objectif prioritaire était uniquement la qualité de reconstruction (ex. compression d'image), β=0.1 serait un meilleur choix ; si l'objectif était de forcer un espace latent très lisse pour l'interpolation, on pourrait tester des valeurs encore un peu plus hautes que 1.0, mais pas au-delà de ce qui fait s'effondrer le KL.
+Figures : `reports/figures/ablation_beta_seeds_curve.png` (courbe avec barres d'erreur) et `reports/figures/ablation_beta_reconstruction_comparison.png` (comparaison visuelle des reconstructions selon β).
 
-## 8. Comparaison qualitative VAE vs CVAE (livrable demandé par l'énoncé)
+**Interprétation :**
+- L'écart-type entre seeds, pour une même valeur de β, est très faible (moins d'1 point) comparé à l'écart entre les valeurs de β (plus de 50 points entre β=0.1 et β=5.0). Les effets observés sont donc attribuables à β, pas au hasard de l'initialisation.
+- **β = 0.1** : meilleure reconstruction, mais KL très élevé (40.75) : l'espace latent est peu régularisé, ce qui dégrade la fiabilité de la génération à partir d'un `z` aléatoire.
+- **β = 5.0** : KL quasi nul (0.21), symptôme de *posterior collapse* — le décodeur cesse d'utiliser l'espace latent. Visible directement sur `ablation_beta_reconstruction_comparison.png` : les reconstructions deviennent des taches informes, indépendamment de l'image d'entrée.
+- **β = 1.0** : meilleur compromis entre fidélité de reconstruction et régularité de l'espace latent. C'est la valeur retenue pour les modèles principaux.
+
+Une première passe à 1 seul seed et 6 epochs avait déjà montré la même tendance (table dans `docs/RESULTATS.md`) ; la version multi-seed ne fait que la confirmer avec plus de rigueur statistique.
+
+### 7.5 Comparaison quantitative VAE vs CVAE
+
+Mesuré sur les 10 000 images du test set MNIST (modèles principaux) :
 
 | Critère | VAE | CVAE |
 |---|---|---|
-| Contrôle de la classe générée | Impossible à demander explicitement (on subit ce que le modèle tire) | On choisit la classe en argument de `sample()` |
-| Couverture des classes en génération libre | Très inégale : seulement 4 classes sur 10 observées sur 1000 tirages | Non applicable — on choisit toujours la classe |
-| Organisation de l'espace latent | Se structure spontanément par classe (visible sur `latent_tsne_vae.png`) | Reste mélangé par classe, se spécialise plutôt sur le style (visible sur `latent_tsne_cvae.png`) |
-| Reconstruction (test set) | 677.35 | 676.56 (quasi identique) |
+| Contrôle de la classe générée | Non — la classe produite n'est pas choisissable | Oui — argument explicite de `sample()` |
+| Couverture des classes en génération libre | Inégale : 4 classes sur 10 observées sur 1000 tirages sans condition | Non applicable, la classe est toujours choisie |
+| Organisation de l'espace latent | Se structure spontanément par classe | Reste mélangé par classe, se spécialise sur le style |
+| Reconstruction (test set) | 677.35 | 676.56 |
 | KL (test set) | 17.12 | 13.89 |
 
-**Conclusion pédagogique :** le CVAE ne reconstruit pas mieux que le VAE (ce n'est pas son objectif), mais il résout le vrai problème du VAE classique — l'absence de contrôle sur la génération — en déplaçant l'information de classe hors de l'espace latent, qui se libère alors pour représenter uniquement le style.
+**Conclusion :** le CVAE ne reconstruit pas mieux que le VAE (ce n'est pas son objectif), mais résout le problème d'absence de contrôle du VAE classique en déplaçant l'information de classe hors de l'espace latent.
 
-## 9. Difficultés rencontrées et comment nous les avons résolues
+**Mesure de contrôlabilité du CVAE.** Une mesure automatique a été mise en place pour quantifier la contrôlabilité au-delà de l'inspection visuelle : un classifieur "plus proche centroïde" (chaque classe est représentée par l'image moyenne des vrais chiffres de cette classe en pixels). Résultat obtenu sur les échantillons générés par le CVAE : **29,4 % de précision globale**, très inférieur à ce que suggère l'inspection visuelle de `cvae_grid.png`. Vérification effectuée sur de vraies images de test (non générées) : le même classifieur atteint 82 % de précision, ce qui valide la méthode en soi. L'écart s'explique par la sensibilité de cette méthode de distance en pixels au **flou** des images générées par un VAE — en particulier pour les chiffres à trait fin (1, 4, 7, 9), un léger flou les rapproche en distance de pixels de classes visuellement plus "pleines" (0, 8), alors qu'un humain les identifie sans ambiguïté. **Ce proxy quantitatif sous-estime donc la contrôlabilité réelle du CVAE** ; à ce stade, l'inspection visuelle reste la mesure la plus fiable. Un classifieur CNN dédié donnerait une mesure plus juste (voir [section 9](#9-limites-connues-et-travaux-futurs)).
 
-### Difficulté 1 : bug de checkpoint partagé entre VAE et CVAE
-Les deux modèles écrivaient dans le même fichier `reports/best_checkpoint.pth`. Le dernier entraînement lancé (le CVAE, en mode test rapide) avait donc écrasé le VAE correctement entraîné, sans que cela soit visible dans les logs. **Résolu** en donnant à chaque expérience son propre dossier de sortie (`training.output_dir` dans le YAML).
+### 7.6 Validation multi-seed des modèles principaux
 
-### Difficulté 2 : entraînement lent car uniquement sur CPU
-Pas de GPU disponible sur cette machine. Un epoch complet sur les 54 000 images MNIST prend environ 2 minutes 30 à 3 minutes. **Résolu / contourné** en :
-- limitant les modèles principaux à 10 epochs (suffisant pour voir une convergence nette, cf. `training_log.csv`, la perte de validation se stabilise après l'epoch 7-8) ;
-- pour l'étude d'ablation uniquement, en utilisant un sous-ensemble de 12 000 images d'entraînement (le jeu de validation reste complet) pour pouvoir tester 3 valeurs de β dans un temps raisonnable ;
-- en entraînant VAE et CVAE en parallèle (deux processus) pour gagner du temps.
+`vae_main` et `cvae_main` ont été réentraînés chacun avec 3 seeds (0, 42, 123), sur les données complètes, à 20 epochs (contre 10 initialement) :
 
-### Difficulté 3 : le proxy de contrôlabilité contredisait l'inspection visuelle
-Détaillé en section 6.4. Nous avons vérifié la méthode sur de vraies images avant de conclure que le problème venait de la sensibilité de la distance en pixels au flou des images générées, et pas d'un bug de génération. C'est un bon exemple de la différence entre "le nombre dit X" et "il faut comprendre pourquoi avant de le croire".
+| Modèle | Reconstruction (moyenne ± écart-type) | KL (moyenne ± écart-type) |
+|---|---|---|
+| VAE | 677.08 ± 0.18 | 17.25 ± 0.17 |
+| CVAE | 675.75 ± 0.88 | 14.14 ± 0.46 |
 
-### Difficulté 4 (héritée de la séance précédente) : import Python, valeur `lr` mal typée, CVAE non branché dans la boucle d'entraînement
-Déjà résolues précédemment (voir `docs/explanations.md` pour le détail) ; nous les listons pour mémoire, elles ne sont plus d'actualité.
+Le VAE est très stable d'un seed à l'autre ; le CVAE varie légèrement plus (écart-type environ 5× supérieur), cohérent avec la tâche légèrement plus complexe qu'il doit apprendre (combiner image et condition), mais l'écart reste faible comparé à l'effet de β. Passer de 10 à 20 epochs n'apporte qu'un gain marginal pour les deux modèles, confirmant que 10 epochs suffisait déjà. Les figures présentées dans ce document restent basées sur les checkpoints `vae_main`/`cvae_main` d'origine (10 epochs, seed=42) ; cette validation multi-seed confirme uniquement leur caractère représentatif.
 
-## 10. Limites actuelles
+## 8. Suivi des expériences avec MLflow
 
-- **Fashion-MNIST** : la configuration existe (`dataset.name: fashion_mnist`) mais **charge en réalité encore MNIST** (`src/data/datasets.py`) — c'est un point d'extension non implémenté, pas un dataset différent. À ne pas présenter comme fait.
-- **CelebA** : non implémenté, lève explicitement une erreur (`NotImplementedError`).
-- **FID** : non calculé. L'énoncé le mentionne comme optionnel ("si les ressources le permettent") ; sur CPU seul, sans réseau Inception pré-entraîné disponible hors-ligne, nous avons priorisé les autres livrables demandés.
-- **Contrôlabilité CVAE** : mesurée avec un proxy simple (plus proche centroïde) dont on a montré les limites (section 6.4), pas avec un vrai classifieur.
-- Les entraînements principaux sont limités à 10 epochs (contrainte CPU) ; la courbe de perte suggère qu'ils pourraient encore progresser légèrement avec plus d'epochs.
+Chaque entraînement (modèles principaux, ablation) est suivi avec **MLflow** : hyperparamètres, métriques par epoch, et artefacts (checkpoint, log CSV) sont enregistrés automatiquement, consultables ensuite dans une interface web.
 
-## 11. Prochaines étapes
+**Fonctionnement :** la fonction `train()` de `src/training/trainer.py` démarre un run MLflow si la section `training.mlflow` du fichier YAML a `enabled: true`. Si MLflow est désactivé ou absent de la configuration, l'entraînement fonctionne à l'identique sans aucune dépendance à MLflow. Le stockage utilise une base SQLite locale (`mlflow.db`), backend recommandé par MLflow depuis la version 3.x.
 
-- Brancher réellement **Fashion-MNIST** (remplacer l'alias vers `datasets.MNIST` par `datasets.FashionMNIST` dans `src/data/datasets.py`) et relancer VAE + CVAE dessus.
-- Intégrer **CelebA** (ou un sous-échantillon), avec conditionnement `multi_label` sur quelques attributs (déjà prévu dans le code de `CVAE`, jamais testé).
-- Entraîner un petit classifieur CNN sur MNIST pour remplacer le proxy "plus proche centroïde" par une vraie mesure de contrôlabilité.
-- Si une machine avec GPU devient disponible, relancer les modèles principaux avec plus d'epochs et comparer.
-- Préparer la démonstration web demandée par l'énoncé (sélection d'une classe → génération, slider d'interpolation).
-- Calculer un score FID si les ressources de calcul le permettent.
+Ce qui est loggé automatiquement :
+- **Paramètres** : type de modèle, dataset, `latent_dim`, `hidden_channels`, `beta`, `lr`, `batch_size`, `epochs`, `seed`, nombre de paramètres du réseau.
+- **Métriques par epoch** : `train_loss`, `train_reconstruction`, `train_kl`, `val_loss`, `val_reconstruction`, `val_kl`.
+- **Artefacts** : `training_log.csv` et `best_checkpoint.pth`.
+
+Les 15 runs réalisés (2 modèles principaux + 9 runs d'ablation + 6 runs de validation multi-seed) sont tous enregistrés — y compris ceux exécutés avant l'ajout du tracking MLflow, réimportés via `scripts/backfill_mlflow.py` (relecture des logs déjà produits, sans réentraînement).
+
+**Consultation :**
+```bash
+mlflow ui --backend-store-uri sqlite:///mlflow.db
+```
+puis ouvrir `http://127.0.0.1:5000`. Deux expériences sont disponibles : `vae-cvae-mnist` (modèles principaux et leur validation multi-seed) et `vae-cvae-mnist-ablation` (étude sur β).
+
+## 9. Limites connues et travaux futurs
+
+| Limite | État actuel | Action prévue |
+|---|---|---|
+| Fashion-MNIST | Déclaré dans la configuration mais charge en réalité MNIST (`src/data/datasets.py`) — non implémenté | Remplacer l'alias par `torchvision.datasets.FashionMNIST` et relancer VAE + CVAE |
+| CelebA | Non implémenté, lève une `NotImplementedError` explicite | Charger le dataset, construire un conditionnement `multi_label` sur des attributs (déjà supporté par `CVAE`) |
+| Score FID | Non calculé (mentionné comme optionnel dans le sujet) | À évaluer si les ressources de calcul le permettent |
+| Mesure de contrôlabilité du CVAE | Proxy "plus proche centroïde", dont les limites sont documentées (section 7.5) | Entraîner un classifieur CNN dédié pour une mesure plus fiable |
+| Démonstration web | Non commencée | Application permettant de choisir une classe et de générer une image, avec un slider d'interpolation |
+| Nombre d'epochs | 10 pour les modèles principaux (contrainte de temps de calcul CPU), validé comme suffisant a posteriori | Réentraînement possible avec plus d'epochs si un GPU devient disponible |
+
+## 10. Difficultés techniques rencontrées
+
+**Bug de checkpoint partagé entre VAE et CVAE.** Les deux modèles écrivaient initialement dans le même fichier de sortie (`reports/best_checkpoint.pth`). Un entraînement du CVAE en mode test rapide avait ainsi écrasé un VAE correctement entraîné, sans erreur visible. Résolu en attribuant à chaque expérience son propre dossier de sortie (`training.output_dir`).
+
+**Temps de calcul sur CPU.** Aucun GPU disponible ; un epoch complet sur les 54 000 images d'entraînement prend entre 1 et 5 minutes selon la charge du système. Ce contrainte a été gérée en calibrant le nombre d'epochs sur l'observation des courbes de perte (plutôt qu'un nombre arbitrairement élevé), en utilisant un sous-ensemble de données pour l'étude d'ablation, et en parallélisant les entraînements indépendants.
+
+**Mesure de contrôlabilité initialement trompeuse.** Décrite en détail en section 7.5 : un premier résultat quantitatif contredisait l'inspection visuelle. La méthode a été vérifiée sur des données réelles avant d'en conclure les limites, plutôt que d'accepter le chiffre sans vérification.
+
+## 11. Organisation de l'équipe
+
+Projet réalisé en équipe de 4, avec un rôle principal par membre et une relecture croisée du travail de chacun avant validation :
+
+- **Données et socle technique** : chargement des données, configuration YAML, structure du dépôt.
+- **Modèles** : implémentation du VAE, du CVAE et de la loss ELBO.
+- **Entraînement et expériences** : lancement des runs, étude d'ablation, évaluation chiffrée.
+- **Visualisation et documentation** : figures, interprétation des résultats, documentation.
 
 ## 12. Glossaire
 
-| Terme anglais | Traduction / explication |
+| Terme | Définition |
 |---|---|
-| Encoder | Encodeur — transforme l'image en distribution latente |
-| Decoder | Décodeur — reconstruit une image à partir du latent |
-| Latent space | Espace latent — représentation compressée apprise |
-| Reconstruction loss | Perte de reconstruction — écart entre image d'origine et reconstruite |
-| KL divergence | Divergence de Kullback-Leibler — écart entre la distribution apprise et la loi normale |
-| Beta (β-VAE) | Poids appliqué au terme KL dans la loss |
-| Batch | Mini-lot d'images traitées ensemble |
-| Epoch | Un passage complet sur les données d'entraînement |
-| Seed | Graine aléatoire, pour pouvoir reproduire un résultat |
-| Condition | Information supplémentaire donnée au modèle (ici, le label de classe) |
-| Posterior collapse | Le modèle cesse d'utiliser l'espace latent (KL proche de 0) |
-| Checkpoint | Sauvegarde des poids du modèle à un instant donné |
+| Encodeur | Réseau qui transforme une image en une distribution dans l'espace latent (`mu`, `logvar`). |
+| Décodeur | Réseau qui reconstruit une image à partir d'un point de l'espace latent. |
+| Espace latent | Représentation compressée apprise par le modèle. |
+| Reparamétrisation | Technique permettant de tirer un échantillon aléatoire tout en gardant le calcul différentiable. |
+| Perte de reconstruction | Écart entre l'image d'origine et sa reconstruction. |
+| Divergence KL | Mesure d'écart entre la distribution latente apprise et la loi normale standard (le prior). |
+| β (beta) | Coefficient pondérant le terme KL dans la loss ELBO. |
+| Posterior collapse | Effondrement de l'espace latent : le décodeur cesse d'utiliser `z`. |
+| Epoch | Un passage complet sur l'ensemble des données d'entraînement. |
+| Seed | Graine aléatoire fixant l'initialisation, pour la reproductibilité. |
+| Checkpoint | Sauvegarde des poids d'un modèle à un instant donné. |
 
-## 13. Questions possibles du professeur et réponses courtes
+## 13. Commandes de référence
 
-**Pourquoi commencer par MNIST ?** Dataset simple et rapide, permet de valider toute la chaîne (données → modèle → loss → entraînement → visualisation) avant de passer à des images plus complexes.
-
-**Quelle est la vraie différence entre VAE et CVAE, au-delà du code ?** Le VAE encode l'identité de la classe *dans* l'espace latent, de façon non supervisée (on le voit sur le t-SNE). Le CVAE reçoit la classe séparément, donc son espace latent se spécialise sur autre chose (le style). Le CVAE permet donc de *choisir* la classe générée, le VAE non.
-
-**Quel est le meilleur β trouvé ?** β = 1.0, meilleur compromis entre fidélité de reconstruction et régularité de l'espace latent (section 7). β=0.1 reconstruit mieux mais régularise mal ; β=5.0 régularise trop et fait s'effondrer l'espace latent (posterior collapse), visible directement sur les images.
-
-**Le CVAE contrôle-t-il vraiment bien la génération ?** Visuellement oui (`cvae_grid.png`), mais notre première tentative de mesure automatique donnait un chiffre bas et trompeur — nous avons identifié pourquoi (sensibilité au flou de la méthode utilisée) plutôt que de le cacher. C'est expliqué en détail en section 6.4.
-
-**Quel est le principal blocage actuel ?** Aucun blocage bloquant : la suite dépend surtout de temps de calcul (Fashion-MNIST et CelebA demandent les mêmes étapes que MNIST, mais chaque entraînement prend 30-45 minutes sur CPU).
-
-## 14. Message de synthèse oral possible
-
-"Bonsoir Monsieur, cette séance nous avons corrigé un bug qui faisait qu'un de nos modèles précédents n'était en réalité pas entraîné, puis nous avons réellement entraîné un VAE et un CVAE sur MNIST. Nous avons mené l'étude d'ablation demandée sur le poids β : β=1.0 offre le meilleur compromis, β=5.0 fait s'effondrer l'espace latent, ce qu'on voit très nettement sur nos figures. Nous avons aussi visualisé l'espace latent en 2D : il se structure tout seul par classe pour le VAE, mais pas pour le CVAE, ce qui illustre bien pourquoi le CVAE permet de contrôler la génération. Nous avons essayé de mesurer automatiquement cette contrôlabilité, obtenu un chiffre qui contredisait ce qu'on voyait à l'œil, et creusé pour comprendre pourquoi plutôt que de l'ignorer. Les prochaines étapes sont Fashion-MNIST, CelebA, et une vraie mesure de contrôlabilité avec un classifieur entraîné."
-
----
-
-## Commandes utiles
-
-Installer les dépendances :
 ```bash
+# Installation
 python -m pip install -r requirements.txt
-```
 
-Lancer les tests (8 tests, doivent tous passer) :
-```bash
+# Tests
 python -m pytest -q
-```
 
-Entraîner le VAE principal (≈30-45 min sur CPU) :
-```bash
+# Entraînement des modèles principaux
 python -m src.training.train --config configs/mnist_vae.yaml
-```
-
-Entraîner le CVAE principal :
-```bash
 python -m src.training.train --config configs/mnist_cvae.yaml
-```
 
-Lancer l'étude d'ablation sur β :
-```bash
+# Étude d'ablation sur beta (1 seed)
 python scripts/run_ablation.py --config configs/ablation_beta.yaml
-```
 
-Régénérer les grilles d'images (à partir d'un modèle déjà entraîné) :
-```bash
+# Régénérer les grilles d'images à partir d'un modèle déjà entraîné
 python scripts/generate_vae_recon_grid.py --checkpoint reports/experiments/vae_main/best_checkpoint.pth
 python scripts/generate_cvae_grid.py --checkpoint reports/experiments/cvae_main/best_checkpoint.pth
-```
 
-Régénérer les visualisations de l'espace latent et l'interpolation :
-```bash
+# Visualisation de l'espace latent et interpolation
 python -m src.visualization.latent --config configs/mnist_vae.yaml --checkpoint reports/experiments/vae_main/best_checkpoint.pth --output reports/figures/latent_tsne_vae.png
 python -m src.visualization.interpolation --config configs/mnist_vae.yaml --checkpoint reports/experiments/vae_main/best_checkpoint.pth --output reports/figures/interpolation_vae_3_to_8.png --class-a 3 --class-b 8
-```
 
-Relancer la comparaison quantitative VAE vs CVAE :
-```bash
+# Comparaison quantitative VAE vs CVAE
 python scripts/evaluate.py
+
+# Interface MLflow
+mlflow ui --backend-store-uri sqlite:///mlflow.db
 ```
 
-## Documents à consulter
+## 14. Documents complémentaires
 
-- [Résultats d'ablation générés automatiquement](docs/RESULTATS.md)
-- [Version condensée pour l'oral de cette séance](docs/presentation_seance_4.md)
-- [Explications techniques détaillées (comment exécuter, concepts, FAQ)](docs/explanations.md)
-- [Compte rendu de la toute première séance (archive)](docs/presentation_seance_1.md)
+- [`docs/RESULTATS.md`](docs/RESULTATS.md) — tableaux de résultats générés automatiquement par les scripts d'ablation.
+- [`docs/explanations.md`](docs/explanations.md) — documentation technique complémentaire (guide d'exécution pas à pas, FAQ).
+- [`docs/presentation_groupe.md`](docs/presentation_groupe.md) — script destiné à une présentation orale du projet.

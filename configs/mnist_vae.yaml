@@ -16,3 +16,11 @@ training:
   beta: 1.0
   device: auto
   output_dir: reports/experiments/vae_main
+  mlflow:
+    enabled: true
+    tracking_uri: sqlite:///mlflow.db
+    experiment_name: vae-cvae-mnist
+    run_name: vae_main
+    tags:
+      phase: main
+      model: vae

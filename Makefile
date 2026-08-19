@@ -14,6 +14,12 @@ ablation:
 evaluate:
 	python scripts/evaluate.py
 
+mlflow-ui:
+	mlflow ui --backend-store-uri sqlite:///mlflow.db
+
+mlflow-backfill:
+	python scripts/backfill_mlflow.py
+
 test:
 	python -m pytest
 

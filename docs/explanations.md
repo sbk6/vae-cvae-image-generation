@@ -22,6 +22,7 @@ But concret réalisé à ce stade : entraîner un VAE et un CVAE **complets** (1
 - Interpolation entre deux exemples dans l'espace latent (`src/visualization/interpolation.py`).
 - Scripts de génération de grilles à partir d'un modèle **déjà entraîné** (`scripts/generate_cvae_grid.py`, `scripts/generate_vae_recon_grid.py`) — ils ne réentraînent plus le modèle à chaque appel.
 - Script de comparaison quantitative VAE vs CVAE (`scripts/evaluate.py`), avec une mesure de contrôlabilité pour le CVAE.
+- Suivi des expériences avec **MLflow** (`training.mlflow` dans le YAML) : paramètres, métriques par epoch et artefacts (checkpoint, log CSV) enregistrés automatiquement pendant l'entraînement. Les runs déjà réalisés avant l'ajout de MLflow ont été réimportés avec `scripts/backfill_mlflow.py`. Détails et commandes dans le README, section 9.
 - Tests unitaires (8 tests, tous verts) pour valider les formes et comportements de base.
 
 ## 3. Arborescence critique (fichiers principaux)
@@ -38,8 +39,10 @@ But concret réalisé à ce stade : entraîner un VAE et un CVAE **complets** (1
 - `scripts/run_ablation.py` : étude d'ablation sur `beta`.
 - `scripts/generate_cvae_grid.py`, `scripts/generate_vae_recon_grid.py` : génération de figures à partir d'un checkpoint existant.
 - `scripts/evaluate.py` : comparaison quantitative VAE vs CVAE.
+- `scripts/backfill_mlflow.py` : réimporte dans MLflow les entraînements déjà réalisés avant que le tracking ne soit branché dans `trainer.py`.
 - `reports/experiments/<nom>/` : un dossier par expérience (`vae_main`, `cvae_main`, `ablation/beta_0.1`, etc.), contenant `training_log.csv` et `best_checkpoint.pth`.
 - `reports/figures/` : toutes les figures produites — voir le tableau détaillé dans le README, section 6.
+- `mlflow.db` : base SQLite locale contenant l'historique des runs MLflow (paramètres, métriques, liens vers les artefacts).
 
 ## 4. Comment exécuter localement (pas-à-pas)
 1. Installer les dépendances (virtualenv recommandé) :
@@ -100,6 +103,13 @@ python -m src.visualization.interpolation --config configs/mnist_vae.yaml --chec
 python scripts/evaluate.py
 ```
 
+9. Consulter le suivi des expériences dans MLflow (params, métriques, artefacts de chaque run) :
+
+```bash
+mlflow ui --backend-store-uri sqlite:///mlflow.db
+```
+puis ouvrir `http://127.0.0.1:5000`. MLflow est activé par défaut dans nos configs (`training.mlflow.enabled: true`) : tout nouvel entraînement lancé avec les commandes ci-dessus y apparaît automatiquement, sans commande supplémentaire.
+
 Toutes les images sont sauvegardées dans `reports/figures/`.
 
 ## 5. Explication simple des concepts (pour débutant)
@@ -150,6 +160,9 @@ R : Regarder `reports/figures/cvae_grid.png` — chaque ligne doit correspondre 
 
 **Q : Comment ré-exécuter un run reproductible ?**
 R : Utiliser la même `seed` dans le YAML (`training.seed`) et le même `device`. Les résultats seront identiques (ou très proches) si tout le reste ne change pas.
+
+**Q : Comment MLflow s'articule avec `training_log.csv` ? Il faut choisir entre les deux ?**
+R : Non, les deux coexistent : `training_log.csv` reste écrit à chaque entraînement (simple, lisible sans dépendance), et MLflow enregistre exactement les mêmes métriques en plus, mais dans une interface consultable et comparable entre runs. Si MLflow est désactivé dans le YAML (`training.mlflow.enabled: false`), seul le CSV est produit — le code fonctionne à l'identique.
 
 **Q : Pourquoi limiter l'ablation à un sous-ensemble de données ?**
 R : Contrainte de temps de calcul (CPU uniquement, un epoch complet prend ~2min30 à 3min sur les 54 000 images). Le sous-échantillonnage ne s'applique qu'au train set : la validation reste complète, donc la comparaison entre les valeurs de `beta` reste fiable.

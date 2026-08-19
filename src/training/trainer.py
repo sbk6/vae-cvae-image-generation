@@ -119,6 +119,50 @@ def run_epoch(
     return averaged
 
 
+def start_mlflow_run(config: Dict):
+    """Démarre (ou non) un run MLflow selon `training.mlflow` dans le YAML.
+
+    Retourne un context manager : soit un vrai run MLflow, soit un
+    `contextlib.nullcontext()` si MLflow est désactivé. Le reste du code
+    n'a donc pas besoin de savoir si MLflow est actif ou non.
+    """
+    import contextlib
+
+    mlflow_cfg = config["training"].get("mlflow", {})
+    if not mlflow_cfg.get("enabled", False):
+        return contextlib.nullcontext(), False
+
+    import mlflow
+
+    mlflow.set_tracking_uri(mlflow_cfg.get("tracking_uri", "sqlite:///mlflow.db"))
+    mlflow.set_experiment(mlflow_cfg.get("experiment_name", "vae-cvae-mnist"))
+    run = mlflow.start_run(run_name=mlflow_cfg.get("run_name"))
+    tags = mlflow_cfg.get("tags", {})
+    if tags:
+        mlflow.set_tags(tags)
+    return run, True
+
+
+def log_mlflow_params(config: Dict, model: torch.nn.Module) -> None:
+    import mlflow
+
+    mlflow.log_params(
+        {
+            "model_type": config.get("model", {}).get("type", "vae"),
+            "dataset": config.get("dataset", {}).get("name"),
+            "train_subset": config.get("dataset", {}).get("train_subset", "full"),
+            "latent_dim": config.get("model", {}).get("latent_dim"),
+            "hidden_channels": config.get("model", {}).get("hidden_channels"),
+            "beta": config["training"].get("beta", 1.0),
+            "lr": config["training"]["lr"],
+            "batch_size": config["training"]["batch_size"],
+            "epochs": config["training"].get("epochs", 10),
+            "seed": config["training"].get("seed"),
+            "n_parameters": sum(p.numel() for p in model.parameters()),
+        }
+    )
+
+
 def train(
     config: Dict,
     model: torch.nn.Module,
@@ -143,20 +187,36 @@ def train(
     # detect whether model expects a condition argument (CVAE)
     conditioned = getattr(model, "num_conditions", None) is not None
 
-    for epoch in range(1, epochs + 1):
-        state.epoch = epoch
-        train_metrics = run_epoch(
-            model, train_loader, optimizer, device, beta, is_train=True, smoke_test=smoke_test, conditioned=conditioned
-        )
-        val_metrics = run_epoch(
-            model, val_loader, None, device, beta, is_train=False, smoke_test=smoke_test, conditioned=conditioned
-        )
+    run_ctx, use_mlflow = start_mlflow_run(config)
+    with run_ctx:
+        if use_mlflow:
+            import mlflow
 
-        log_metrics(csv_path, epoch, "train", train_metrics)
-        log_metrics(csv_path, epoch, "val", val_metrics)
+            log_mlflow_params(config, model)
 
-        if val_metrics["loss"] < state.best_loss:
-            state.best_loss = val_metrics["loss"]
-            save_checkpoint(model, optimizer, state)
+        for epoch in range(1, epochs + 1):
+            state.epoch = epoch
+            train_metrics = run_epoch(
+                model, train_loader, optimizer, device, beta, is_train=True, smoke_test=smoke_test, conditioned=conditioned
+            )
+            val_metrics = run_epoch(
+                model, val_loader, None, device, beta, is_train=False, smoke_test=smoke_test, conditioned=conditioned
+            )
+
+            log_metrics(csv_path, epoch, "train", train_metrics)
+            log_metrics(csv_path, epoch, "val", val_metrics)
+
+            if use_mlflow:
+                mlflow.log_metrics({f"train_{k}": v for k, v in train_metrics.items() if k != "beta"}, step=epoch)
+                mlflow.log_metrics({f"val_{k}": v for k, v in val_metrics.items() if k != "beta"}, step=epoch)
+
+            if val_metrics["loss"] < state.best_loss:
+                state.best_loss = val_metrics["loss"]
+                save_checkpoint(model, optimizer, state)
+
+        if use_mlflow:
+            mlflow.log_metric("best_val_loss", state.best_loss)
+            mlflow.log_artifact(str(csv_path))
+            mlflow.log_artifact(str(output_dir / "best_checkpoint.pth"))
 
     print(f"Training completed. Best validation loss: {state.best_loss:.4f}")
