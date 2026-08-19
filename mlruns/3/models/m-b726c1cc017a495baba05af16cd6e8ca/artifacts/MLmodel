@@ -1,0 +1,53 @@
+artifact_path: file:///D:/ESGIS/Master 1/Projet Annuel/vae-cvae-image-generation/mlruns/3/models/m-b726c1cc017a495baba05af16cd6e8ca/artifacts
+flavors:
+  python_function:
+    artifacts:
+      cvae_checkpoint_mnist:
+        path: artifacts\cvae_checkpoint_mnist.pth
+        uri: reports\experiments\_deployment_staging\cvae_checkpoint_mnist.pth
+      cvae_config_mnist:
+        path: artifacts\cvae_config_mnist.yaml
+        uri: reports\experiments\_deployment_staging\cvae_config_mnist.yaml
+      latent_centroids_mnist:
+        path: artifacts\latent_centroids_mnist.json
+        uri: reports\experiments\_deployment_staging\latent_centroids_mnist.json
+      registry:
+        path: artifacts\deployment_registry.yaml
+        uri: configs/deployment_registry.yaml
+      vae_checkpoint_mnist:
+        path: artifacts\vae_checkpoint_mnist.pth
+        uri: reports\experiments\_deployment_staging\vae_checkpoint_mnist.pth
+      vae_config_mnist:
+        path: artifacts\vae_config_mnist.yaml
+        uri: reports\experiments\_deployment_staging\vae_config_mnist.yaml
+    cloudpickle_version: 3.1.2
+    code: code
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pyfunc.model
+    python_model: python_model.pkl
+    python_version: 3.11.9
+    streamable: false
+is_signature_from_type_hint: false
+mlflow_version: 3.15.1
+model_id: m-b726c1cc017a495baba05af16cd6e8ca
+model_size_bytes: 5804495
+model_uuid: m-b726c1cc017a495baba05af16cd6e8ca
+prompts: null
+run_id: b93471f1d9dc423eaa08104d886cabd9
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  serving_input_path: serving_input_example.json
+  type: dataframe
+signature:
+  inputs: '[{"type": "string", "name": "action", "required": false}, {"type": "string",
+    "name": "dataset", "required": false}, {"type": "double", "name": "classe", "required":
+    false}, {"type": "double", "name": "classe_a", "required": false}, {"type": "double",
+    "name": "classe_b", "required": false}, {"type": "double", "name": "t", "required":
+    false}]'
+  outputs: '[{"type": "string", "name": "image_base64", "required": true}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2026-08-19 12:32:04.378509'

@@ -105,7 +105,7 @@ src/
   visualization/latent.py          projection t-SNE de l'espace latent
   visualization/interpolation.py   interpolation entre deux images dans l'espace latent
   evaluation/                      réservé aux futures métriques (FID, etc.)
-  serving/cvae_pyfunc.py           wrapper MLflow pyfunc exposant le CVAE (classe -> image PNG base64)
+  serving/generation_pyfunc.py     wrapper MLflow pyfunc : generate (CVAE) + interpolate (VAE)
 
 scripts/
   run_ablation.py                  étude d'ablation sur beta (1 seed)
@@ -113,7 +113,8 @@ scripts/
   aggregate_ablation_seeds.py      agrège les runs multi-seed de l'ablation
   run_main_seed_worker.py          un run des modèles principaux pour un seed donné
   backfill_mlflow.py               réimporte dans MLflow des runs déjà exécutés
-  register_cvae_model.py           enregistre le CVAE dans le Model Registry MLflow (déploiement)
+  compute_latent_centroids.py      précalcule un point latent par classe (prérequis interpolation)
+  register_generation_model.py     enregistre generate (CVAE) + interpolate (VAE) dans MLflow (déploiement)
   generate_cvae_grid.py            grille d'échantillons conditionnés par classe
   generate_vae_recon_grid.py       grille de reconstruction + grille d'échantillons libres
   evaluate.py                      comparaison quantitative VAE vs CVAE
@@ -303,16 +304,17 @@ puis ouvrir `http://127.0.0.1:5000`. Deux expériences sont disponibles : `vae-c
 
 ## 9. Déploiement du modèle (API pour l'application web)
 
-Le CVAE entraîné est déployé comme un service HTTP autonome via le **Model Registry** et le **serving natif** de MLflow, afin que l'équipe développant l'application web de démonstration puisse générer des images sans dépendre de PyTorch ni du code d'entraînement.
+Les modèles entraînés sont déployés comme un service HTTP unique via le **Model Registry** et le **serving natif** de MLflow, afin que l'équipe développant l'application web de démonstration puisse générer des images sans dépendre de PyTorch ni du code d'entraînement.
 
-**Un seul endpoint pour tous les datasets de l'équipe.** Le projet est réparti en 3 datasets (MNIST, Fashion-MNIST, CelebA), chacun avec son propre CVAE entraîné indépendamment par un membre différent de l'équipe. Plutôt que de démarrer un serveur — donc un port — par dataset, un unique wrapper (`src/serving/cvae_pyfunc.py`) charge tous les modèles disponibles et route chaque requête vers le bon modèle selon un champ `dataset` dans la requête (`configs/deployment_registry.yaml` liste les checkpoints à charger). Un seul serveur, un seul port, un seul contrat d'API pour l'application web, quel que soit le nombre de datasets déjà entraînés — actuellement seul MNIST est disponible, Fashion-MNIST et CelebA s'ajouteront sans rien changer côté application web.
+**Deux fonctionnalités, un seul endpoint, tous les datasets.** L'énoncé demande deux capacités pour la démo web : (1) choisir une classe cible pour générer une image (CVAE), et (2) un slider d'interpolation dans l'espace latent (VAE). Le projet est en plus réparti en 3 datasets (MNIST, Fashion-MNIST, CelebA), chacun avec ses propres VAE/CVAE entraînés indépendamment par un membre différent de l'équipe. Plutôt que de multiplier les services, un unique wrapper (`src/serving/generation_pyfunc.py`) charge tous les modèles disponibles et route chaque requête vers le bon modèle et la bonne action selon deux champs de la requête, `action` (`generate` ou `interpolate`) et `dataset` (`configs/deployment_registry.yaml` liste les fichiers à charger pour chacun). Un seul serveur, un seul port, un seul contrat d'API — actuellement seul MNIST est disponible pour les deux actions, les autres datasets s'ajouteront sans rien changer côté application web.
 
 ```bash
-python scripts/register_cvae_model.py                          # enregistre les modèles disponibles (une fois, ou après un nouvel entraînement)
-mlflow models serve -m "models:/cvae_generator/2" -p 5001 --env-manager local   # démarre le serveur unique
+python scripts/compute_latent_centroids.py                      # prérequis pour l'interpolation (une fois par VAE entraîné)
+python scripts/register_generation_model.py                     # enregistre les modèles disponibles (une fois, ou après un nouvel entraînement)
+mlflow models serve -m "models:/image_generator/2" -p 5001 --env-manager local   # démarre le serveur unique
 ```
 
-Le serveur expose `POST /invocations` : on lui envoie un dataset (optionnel, défaut `mnist`) et une classe, il répond avec l'image générée correspondante, encodée en PNG/base64. Ce pipeline a été testé de bout en bout (enregistrement, démarrage du serveur, requête HTTP réelle avec et sans le champ `dataset`, gestion d'un dataset non disponible, décodage des images reçues).
+Le serveur expose `POST /invocations` : pour `action=generate`, on envoie une classe et on reçoit l'image générée par le CVAE ; pour `action=interpolate`, on envoie deux classes et une position `t ∈ [0, 1]` et on reçoit l'image intermédiaire décodée par le VAE à partir de centroïdes latents précalculés par classe. Ce pipeline a été testé de bout en bout (enregistrement, démarrage du serveur, requêtes HTTP réelles pour les deux actions, vérification visuelle de l'interpolation à plusieurs positions du slider, gestion des cas d'erreur).
 
 Le contrat d'API complet (format des requêtes/réponses, exemples curl et JavaScript, gestion des erreurs, procédure pour ajouter un nouveau dataset) est documenté dans [`docs/DEPLOIEMENT.md`](docs/DEPLOIEMENT.md), à destination de l'équipe web.
 
@@ -393,8 +395,9 @@ python scripts/evaluate.py
 mlflow ui --backend-store-uri sqlite:///mlflow.db
 
 # Déploiement du CVAE comme service HTTP (voir docs/DEPLOIEMENT.md)
-python scripts/register_cvae_model.py
-mlflow models serve -m "models:/cvae_generator/2" -p 5001 --env-manager local
+python scripts/compute_latent_centroids.py
+python scripts/register_generation_model.py
+mlflow models serve -m "models:/image_generator/2" -p 5001 --env-manager local
 ```
 
 ## 15. Documents complémentaires

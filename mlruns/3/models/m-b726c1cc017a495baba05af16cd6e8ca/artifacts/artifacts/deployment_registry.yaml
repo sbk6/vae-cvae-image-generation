@@ -1,0 +1,47 @@
+# Registre des modèles déployés derrière l'endpoint unique de génération.
+#
+# Un seul serveur MLflow (un seul port) sert TOUS les datasets et TOUTES les
+# actions listées ici :
+# - "generate" (CVAE) : choisir une classe -> une image de cette classe
+# - "interpolate" (VAE) : deux classes + une position t -> l'image intermédiaire
+#   (slider d'interpolation), via des centroïdes latents précalculés
+#   (voir scripts/compute_latent_centroids.py)
+#
+# Au chargement, seuls les datasets dont les fichiers existent réellement sur
+# disque sont chargés — les autres sont ignorés (avec un message clair), ce
+# qui permet d'ajouter Fashion-MNIST et CelebA au fur et à mesure, sans rien
+# changer au code ni à l'endpoint déjà utilisé par l'application web.
+#
+# Pour ajouter un dataset une fois son VAE et son CVAE entraînés : dupliquer
+# une entrée ci-dessous avec le bon nom et les bons chemins, calculer ses
+# centroïdes latents avec compute_latent_centroids.py, puis relancer
+# `python scripts/register_generation_model.py` (crée une nouvelle version
+# du modèle enregistré, sans rien casser pour ceux qui utilisent déjà l'ancienne).
+
+datasets:
+  mnist:
+    cvae:
+      config: configs/mnist_cvae.yaml
+      checkpoint: reports/experiments/cvae_main/best_checkpoint.pth
+    vae:
+      config: configs/mnist_vae.yaml
+      checkpoint: reports/experiments/vae_main/best_checkpoint.pth
+      latent_centroids: reports/experiments/vae_main/latent_centroids.json
+
+  # fashion_mnist:
+  #   cvae:
+  #     config: configs/fashion_mnist_cvae.yaml
+  #     checkpoint: reports/experiments_fashion_mnist/cvae_main/best_checkpoint.pth
+  #   vae:
+  #     config: configs/fashion_mnist_vae.yaml
+  #     checkpoint: reports/experiments_fashion_mnist/vae_main/best_checkpoint.pth
+  #     latent_centroids: reports/experiments_fashion_mnist/vae_main/latent_centroids.json
+
+  # celeba:
+  #   cvae:
+  #     config: configs/celeba_cvae.yaml
+  #     checkpoint: reports/experiments_celeba/cvae_main/best_checkpoint.pth
+  #   vae:
+  #     config: configs/celeba_vae.yaml
+  #     checkpoint: reports/experiments_celeba/vae_main/best_checkpoint.pth
+  #     latent_centroids: reports/experiments_celeba/vae_main/latent_centroids.json

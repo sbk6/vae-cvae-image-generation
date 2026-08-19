@@ -20,11 +20,14 @@ mlflow-ui:
 mlflow-backfill:
 	python scripts/backfill_mlflow.py
 
-register-cvae:
-	python scripts/register_cvae_model.py
+latent-centroids:
+	python scripts/compute_latent_centroids.py
 
-serve-cvae:
-	MLFLOW_TRACKING_URI=sqlite:///mlflow.db mlflow models serve -m "models:/cvae_generator/2" -p 5001 --env-manager local
+register-generation:
+	python scripts/register_generation_model.py
+
+serve-generation:
+	MLFLOW_TRACKING_URI=sqlite:///mlflow.db mlflow models serve -m "models:/image_generator/2" -p 5001 --env-manager local
 
 test:
 	python -m pytest
