@@ -1,0 +1,27 @@
+# Registre des modèles CVAE déployés derrière l'endpoint unique de génération.
+#
+# Un seul serveur MLflow (un seul port) sert TOUS les datasets listés ici :
+# la requête précise simplement quel dataset elle veut via le champ "dataset".
+# Au chargement, seuls les datasets dont le checkpoint existe réellement sur
+# disque sont chargés — les autres sont ignorés (avec un message clair),
+# ce qui permet d'ajouter Fashion-MNIST et CelebA au fur et à mesure, sans
+# rien changer au code ni à l'endpoint déjà utilisé par l'application web.
+#
+# Pour ajouter un dataset une fois son CVAE entraîné : dupliquer une entrée
+# ci-dessous avec le bon nom, le chemin de sa config d'entraînement, et le
+# chemin de son best_checkpoint.pth, puis relancer
+# `python scripts/register_cvae_model.py` (ça crée une nouvelle version du
+# modèle enregistré, sans rien casser pour ceux qui utilisent déjà l'ancienne).
+
+datasets:
+  mnist:
+    config: configs/mnist_cvae.yaml
+    checkpoint: reports/experiments/cvae_main/best_checkpoint.pth
+
+  # fashion_mnist:
+  #   config: configs/fashion_mnist_cvae.yaml
+  #   checkpoint: reports/experiments_fashion_mnist/cvae_main/best_checkpoint.pth
+
+  # celeba:
+  #   config: configs/celeba_cvae.yaml
+  #   checkpoint: reports/experiments_celeba/cvae_main/best_checkpoint.pth

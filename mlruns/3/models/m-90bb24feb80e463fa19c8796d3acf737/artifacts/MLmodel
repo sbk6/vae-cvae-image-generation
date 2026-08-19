@@ -1,0 +1,41 @@
+artifact_path: file:///D:/ESGIS/Master 1/Projet Annuel/vae-cvae-image-generation/mlruns/3/models/m-90bb24feb80e463fa19c8796d3acf737/artifacts
+flavors:
+  python_function:
+    artifacts:
+      checkpoint_mnist:
+        path: artifacts\best_checkpoint.pth
+        uri: reports\experiments\cvae_main\best_checkpoint.pth
+      config_mnist:
+        path: artifacts\mnist_cvae.yaml
+        uri: configs\mnist_cvae.yaml
+      registry:
+        path: artifacts\deployment_registry.yaml
+        uri: configs/deployment_registry.yaml
+    cloudpickle_version: 3.1.2
+    code: code
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pyfunc.model
+    python_model: python_model.pkl
+    python_version: 3.11.9
+    streamable: false
+is_signature_from_type_hint: false
+mlflow_version: 3.15.1
+model_id: m-90bb24feb80e463fa19c8796d3acf737
+model_size_bytes: 3119355
+model_uuid: m-90bb24feb80e463fa19c8796d3acf737
+prompts: null
+run_id: 6cff89157202472196c9526225b2495a
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  serving_input_path: serving_input_example.json
+  type: dataframe
+signature:
+  inputs: '[{"type": "string", "name": "dataset", "required": true}, {"type": "long",
+    "name": "classe", "required": true}]'
+  outputs: '[{"type": "string", "name": "image_base64", "required": true}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2026-08-19 12:09:11.521582'

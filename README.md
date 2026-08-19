@@ -14,12 +14,13 @@ Ce document décrit le projet de bout en bout : le sujet traité, la démarche s
 6. [Protocole expérimental](#6-protocole-expérimental)
 7. [Résultats détaillés](#7-résultats-détaillés)
 8. [Suivi des expériences avec MLflow](#8-suivi-des-expériences-avec-mlflow)
-9. [Limites connues et travaux futurs](#9-limites-connues-et-travaux-futurs)
-10. [Difficultés techniques rencontrées](#10-difficultés-techniques-rencontrées)
-11. [Organisation de l'équipe](#11-organisation-de-léquipe)
-12. [Glossaire](#12-glossaire)
-13. [Commandes de référence](#13-commandes-de-référence)
-14. [Documents complémentaires](#14-documents-complémentaires)
+9. [Déploiement du modèle (API pour l'application web)](#9-déploiement-du-modèle-api-pour-lapplication-web)
+10. [Limites connues et travaux futurs](#10-limites-connues-et-travaux-futurs)
+11. [Difficultés techniques rencontrées](#11-difficultés-techniques-rencontrées)
+12. [Organisation de l'équipe](#12-organisation-de-léquipe)
+13. [Glossaire](#13-glossaire)
+14. [Commandes de référence](#14-commandes-de-référence)
+15. [Documents complémentaires](#15-documents-complémentaires)
 
 ---
 
@@ -39,7 +40,7 @@ Références du sujet :
 - Évaluer quantitativement la qualité de génération.
 - Le sujet prévoit trois jeux de données : **MNIST**, **Fashion-MNIST**, **CelebA**.
 
-**Périmètre couvert par ce dépôt à ce jour :** l'ensemble des exigences ci-dessus a été traité sur **MNIST**. Fashion-MNIST et CelebA ne sont pas encore implémentés (voir [section 9](#9-limites-connues-et-travaux-futurs)).
+**Périmètre couvert par ce dépôt à ce jour :** l'ensemble des exigences ci-dessus a été traité sur **MNIST**, y compris le déploiement du modèle comme service HTTP consommable par une application web (demandé en cours de projet, voir [section 9](#9-déploiement-du-modèle-api-pour-lapplication-web)). Fashion-MNIST et CelebA ne sont pas encore implémentés (voir [section 10](#10-limites-connues-et-travaux-futurs)).
 
 ## 2. Résumé des résultats
 
@@ -51,6 +52,7 @@ Pour un lecteur pressé, voici l'essentiel :
 - Fait notable : le VAE, bien qu'il ne reçoive jamais l'information de classe, structure spontanément son espace latent par chiffre (visible en projection t-SNE) ; le CVAE, lui, ne le fait pas, car cette information lui est donnée directement.
 - Les modèles principaux et l'étude d'ablation ont été revalidés avec plusieurs seeds pour garantir que les résultats sont reproductibles et non liés au hasard de l'initialisation.
 - L'ensemble des entraînements (15 au total) est suivi et consultable via **MLflow**.
+- Le CVAE est déployé comme un service HTTP via le Model Registry MLflow, prêt à être consommé par l'application web de démonstration (voir [section 9](#9-déploiement-du-modèle-api-pour-lapplication-web)).
 
 Le détail de chaque résultat, avec les fichiers exacts à consulter, est donné en [section 7](#7-résultats-détaillés).
 
@@ -103,6 +105,7 @@ src/
   visualization/latent.py          projection t-SNE de l'espace latent
   visualization/interpolation.py   interpolation entre deux images dans l'espace latent
   evaluation/                      réservé aux futures métriques (FID, etc.)
+  serving/cvae_pyfunc.py           wrapper MLflow pyfunc exposant le CVAE (classe -> image PNG base64)
 
 scripts/
   run_ablation.py                  étude d'ablation sur beta (1 seed)
@@ -110,6 +113,7 @@ scripts/
   aggregate_ablation_seeds.py      agrège les runs multi-seed de l'ablation
   run_main_seed_worker.py          un run des modèles principaux pour un seed donné
   backfill_mlflow.py               réimporte dans MLflow des runs déjà exécutés
+  register_cvae_model.py           enregistre le CVAE dans le Model Registry MLflow (déploiement)
   generate_cvae_grid.py            grille d'échantillons conditionnés par classe
   generate_vae_recon_grid.py       grille de reconstruction + grille d'échantillons libres
   evaluate.py                      comparaison quantitative VAE vs CVAE
@@ -128,6 +132,7 @@ docs/
   RESULTATS.md                     tableaux de résultats générés automatiquement par les scripts
   explanations.md                  documentation technique complémentaire (concepts, FAQ)
   presentation_groupe.md           script de présentation orale du projet
+  DEPLOIEMENT.md                   contrat d'API du service de génération, pour l'équipe web
 
 mlflow.db                        base SQLite contenant l'historique des runs MLflow
 tests/                           suite de tests unitaires
@@ -182,28 +187,51 @@ Toutes les expériences sont reproductibles : la graine aléatoire (seed) fixe l
 
 ### 7.1 Reconstruction et génération
 
-| Figure | Contenu | Lecture |
-|---|---|---|
-| `reports/figures/mnist_real_grid.png` | 16 images réelles de MNIST | Référence visuelle. |
-| `reports/figures/vae_reconstruction_grid.png` | Haut : images réelles ; bas : leur reconstruction par le VAE | Une bonne correspondance entre les deux lignes indique que l'encodeur/décodeur a bien appris. Un léger flou est un effet normal de la loss MSE + KL, pas une anomalie. |
-| `reports/figures/vae_random_samples_grid.png` | 64 images générées en tirant `z ~ N(0, I)`, sans condition | Génération "libre" du VAE : la classe produite n'est pas contrôlable. |
-| `reports/figures/cvae_grid.png` | Une ligne par classe (0 à 9), chaque ligne générée avec la classe demandée explicitement au CVAE | Figure clé pour juger la contrôlabilité : chaque ligne doit ressembler au chiffre demandé. Les classes 0, 1, 2, 7, 8, 9 sont nettes et cohérentes ; certaines lignes (3, 4, 5, 6) contiennent des échantillons plus ambigus, cohérent avec un entraînement de 10 epochs sur CPU. |
+**16 images réelles de MNIST**, servant de référence visuelle :
+
+![Images réelles de MNIST](reports/figures/mnist_real_grid.png)
+
+**Reconstruction par le VAE** (haut : images réelles ; bas : leur reconstruction) :
+
+![Reconstruction VAE](reports/figures/vae_reconstruction_grid.png)
+
+Une bonne correspondance entre les deux lignes indique que l'encodeur/décodeur a bien appris. Un léger flou est un effet normal de la loss MSE + KL, pas une anomalie.
+
+**Génération libre du VAE** — 64 images générées en tirant `z ~ N(0, I)`, sans condition (la classe produite n'est pas contrôlable) :
+
+![Échantillons libres du VAE](reports/figures/vae_random_samples_grid.png)
+
+**Génération conditionnée par le CVAE** — une ligne par classe (0 à 9), chaque ligne générée en demandant explicitement cette classe :
+
+![Grille du CVAE par classe](reports/figures/cvae_grid.png)
+
+Figure clé pour juger la contrôlabilité : chaque ligne doit ressembler au chiffre demandé. Les classes 0, 1, 2, 7, 8, 9 sont nettes et cohérentes ; certaines lignes (3, 4, 5, 6) contiennent des échantillons plus ambigus, cohérent avec un entraînement de 10 epochs sur CPU.
 
 ### 7.2 Espace latent
 
-| Figure | Contenu |
-|---|---|
-| `reports/figures/latent_tsne_vae.png` | Projection t-SNE en 2D de 2000 images de test dans l'espace latent du VAE, colorées par classe réelle. |
-| `reports/figures/latent_tsne_cvae.png` | Idem pour le CVAE. |
+Projection t-SNE en 2D de 2000 images de test dans l'espace latent, colorées par classe réelle :
+
+**VAE :**
+
+![Espace latent du VAE en t-SNE](reports/figures/latent_tsne_vae.png)
+
+**CVAE :**
+
+![Espace latent du CVAE en t-SNE](reports/figures/latent_tsne_cvae.png)
 
 **Observation principale :** dans le VAE, les points se regroupent nettement par classe **bien que le label ne soit jamais fourni au modèle** — le réseau apprend spontanément à séparer les chiffres dans l'espace latent, cette organisation étant la stratégie la plus efficace pour bien reconstruire des images très différentes. Dans le CVAE, les classes restent mélangées dans l'espace latent : cohérent, puisque l'information de classe est déjà fournie séparément au décodeur, l'espace latent se spécialise alors sur autre chose (le style d'écriture : inclinaison, épaisseur du trait...).
 
 ### 7.3 Interpolation latente
 
-| Figure | Contenu |
-|---|---|
-| `reports/figures/interpolation_vae_3_to_8.png` | Interpolation linéaire, en 10 étapes, entre le `z` d'un vrai 3 et le `z` d'un vrai 8. |
-| `reports/figures/interpolation_vae_1_to_7.png` | Idem entre un 1 et un 7. |
+Interpolation linéaire, en 10 étapes, entre le `z` de deux vrais exemples :
+
+**De 3 à 8 :**
+
+![Interpolation de 3 à 8](reports/figures/interpolation_vae_3_to_8.png)
+
+**De 1 à 7 :**
+
+![Interpolation de 1 à 7](reports/figures/interpolation_vae_1_to_7.png)
 
 La transition entre les deux classes est progressive, sans saut brutal, ce qui indique que l'espace latent appris est continu — propriété directement liée à la régularisation par le terme KL.
 
@@ -273,7 +301,24 @@ mlflow ui --backend-store-uri sqlite:///mlflow.db
 ```
 puis ouvrir `http://127.0.0.1:5000`. Deux expériences sont disponibles : `vae-cvae-mnist` (modèles principaux et leur validation multi-seed) et `vae-cvae-mnist-ablation` (étude sur β).
 
-## 9. Limites connues et travaux futurs
+## 9. Déploiement du modèle (API pour l'application web)
+
+Le CVAE entraîné est déployé comme un service HTTP autonome via le **Model Registry** et le **serving natif** de MLflow, afin que l'équipe développant l'application web de démonstration puisse générer des images sans dépendre de PyTorch ni du code d'entraînement.
+
+**Un seul endpoint pour tous les datasets de l'équipe.** Le projet est réparti en 3 datasets (MNIST, Fashion-MNIST, CelebA), chacun avec son propre CVAE entraîné indépendamment par un membre différent de l'équipe. Plutôt que de démarrer un serveur — donc un port — par dataset, un unique wrapper (`src/serving/cvae_pyfunc.py`) charge tous les modèles disponibles et route chaque requête vers le bon modèle selon un champ `dataset` dans la requête (`configs/deployment_registry.yaml` liste les checkpoints à charger). Un seul serveur, un seul port, un seul contrat d'API pour l'application web, quel que soit le nombre de datasets déjà entraînés — actuellement seul MNIST est disponible, Fashion-MNIST et CelebA s'ajouteront sans rien changer côté application web.
+
+```bash
+python scripts/register_cvae_model.py                          # enregistre les modèles disponibles (une fois, ou après un nouvel entraînement)
+mlflow models serve -m "models:/cvae_generator/2" -p 5001 --env-manager local   # démarre le serveur unique
+```
+
+Le serveur expose `POST /invocations` : on lui envoie un dataset (optionnel, défaut `mnist`) et une classe, il répond avec l'image générée correspondante, encodée en PNG/base64. Ce pipeline a été testé de bout en bout (enregistrement, démarrage du serveur, requête HTTP réelle avec et sans le champ `dataset`, gestion d'un dataset non disponible, décodage des images reçues).
+
+Le contrat d'API complet (format des requêtes/réponses, exemples curl et JavaScript, gestion des erreurs, procédure pour ajouter un nouveau dataset) est documenté dans [`docs/DEPLOIEMENT.md`](docs/DEPLOIEMENT.md), à destination de l'équipe web.
+
+**Hébergement :** aucun serveur externe (VPS ou autre) n'est requis pour le développement ou la soutenance — le serveur MLflow tourne en local et expose un port HTTP consommable par le backend web sur la même machine ou le même réseau local. Un hébergement externe ne serait utile que pour une disponibilité permanente sur internet, ce qui n'est pas une exigence du sujet.
+
+## 10. Limites connues et travaux futurs
 
 | Limite | État actuel | Action prévue |
 |---|---|---|
@@ -281,10 +326,10 @@ puis ouvrir `http://127.0.0.1:5000`. Deux expériences sont disponibles : `vae-c
 | CelebA | Non implémenté, lève une `NotImplementedError` explicite | Charger le dataset, construire un conditionnement `multi_label` sur des attributs (déjà supporté par `CVAE`) |
 | Score FID | Non calculé (mentionné comme optionnel dans le sujet) | À évaluer si les ressources de calcul le permettent |
 | Mesure de contrôlabilité du CVAE | Proxy "plus proche centroïde", dont les limites sont documentées (section 7.5) | Entraîner un classifieur CNN dédié pour une mesure plus fiable |
-| Démonstration web | Non commencée | Application permettant de choisir une classe et de générer une image, avec un slider d'interpolation |
+| Démonstration web | Endpoint de génération déployé (section 9) ; l'application web (frontend + slider d'interpolation) reste à construire | Consommer l'endpoint documenté dans `docs/DEPLOIEMENT.md` |
 | Nombre d'epochs | 10 pour les modèles principaux (contrainte de temps de calcul CPU), validé comme suffisant a posteriori | Réentraînement possible avec plus d'epochs si un GPU devient disponible |
 
-## 10. Difficultés techniques rencontrées
+## 11. Difficultés techniques rencontrées
 
 **Bug de checkpoint partagé entre VAE et CVAE.** Les deux modèles écrivaient initialement dans le même fichier de sortie (`reports/best_checkpoint.pth`). Un entraînement du CVAE en mode test rapide avait ainsi écrasé un VAE correctement entraîné, sans erreur visible. Résolu en attribuant à chaque expérience son propre dossier de sortie (`training.output_dir`).
 
@@ -292,7 +337,7 @@ puis ouvrir `http://127.0.0.1:5000`. Deux expériences sont disponibles : `vae-c
 
 **Mesure de contrôlabilité initialement trompeuse.** Décrite en détail en section 7.5 : un premier résultat quantitatif contredisait l'inspection visuelle. La méthode a été vérifiée sur des données réelles avant d'en conclure les limites, plutôt que d'accepter le chiffre sans vérification.
 
-## 11. Organisation de l'équipe
+## 12. Organisation de l'équipe
 
 Projet réalisé en équipe de 4, avec un rôle principal par membre et une relecture croisée du travail de chacun avant validation :
 
@@ -301,7 +346,7 @@ Projet réalisé en équipe de 4, avec un rôle principal par membre et une rele
 - **Entraînement et expériences** : lancement des runs, étude d'ablation, évaluation chiffrée.
 - **Visualisation et documentation** : figures, interprétation des résultats, documentation.
 
-## 12. Glossaire
+## 13. Glossaire
 
 | Terme | Définition |
 |---|---|
@@ -317,7 +362,7 @@ Projet réalisé en équipe de 4, avec un rôle principal par membre et une rele
 | Seed | Graine aléatoire fixant l'initialisation, pour la reproductibilité. |
 | Checkpoint | Sauvegarde des poids d'un modèle à un instant donné. |
 
-## 13. Commandes de référence
+## 14. Commandes de référence
 
 ```bash
 # Installation
@@ -346,10 +391,15 @@ python scripts/evaluate.py
 
 # Interface MLflow
 mlflow ui --backend-store-uri sqlite:///mlflow.db
+
+# Déploiement du CVAE comme service HTTP (voir docs/DEPLOIEMENT.md)
+python scripts/register_cvae_model.py
+mlflow models serve -m "models:/cvae_generator/2" -p 5001 --env-manager local
 ```
 
-## 14. Documents complémentaires
+## 15. Documents complémentaires
 
 - [`docs/RESULTATS.md`](docs/RESULTATS.md) — tableaux de résultats générés automatiquement par les scripts d'ablation.
 - [`docs/explanations.md`](docs/explanations.md) — documentation technique complémentaire (guide d'exécution pas à pas, FAQ).
 - [`docs/presentation_groupe.md`](docs/presentation_groupe.md) — script destiné à une présentation orale du projet.
+- [`docs/DEPLOIEMENT.md`](docs/DEPLOIEMENT.md) — contrat d'API du service de génération d'images, à destination de l'équipe développant l'application web.
