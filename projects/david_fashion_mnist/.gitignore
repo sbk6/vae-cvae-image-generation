@@ -31,14 +31,19 @@ __pycache__/
 
 data/
 
-
 # ================================================================
 # CHECKPOINTS PYTORCH
 # ================================================================
-
-checkpoints/
+checkpoints/*
 *.pt
 *.pth
+
+# Exceptions : checkpoints finaux versés pour vérification MLflow
+!checkpoints/vae_beta_1_seed42_final.pt
+!checkpoints/cvae_beta_1_seed42_final.pt
+
+# Exception : modèles MLflow packagés (contiennent leurs propres .pt)
+!deployment/packaged_models/**/*.pt
 
 
 # ================================================================
@@ -72,3 +77,5 @@ mlflow.db-journal
 
 .DS_Store
 Thumbs.db
+# Archive zip locale (redondante avec deployment/packaged_models/)
+deployment/packaged_models.zip
