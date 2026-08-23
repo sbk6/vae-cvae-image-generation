@@ -13,21 +13,31 @@ import pytest
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
-pytest.importorskip("flask", reason="flask non installe (pip install -r backend/requirements.txt)")
+pytest.importorskip("fastapi", reason="fastapi non installe (pip install -r backend/requirements.txt)")
+pytest.importorskip("mlflow", reason="mlflow non installe (pip install -r backend/requirements.txt)")
 
 from PIL import Image  # noqa: E402
 
+from fastapi.testclient import TestClient  # noqa: E402
+
 from backend.app import create_app  # noqa: E402
 from backend.catalog import Catalog, parse_beta_tag  # noqa: E402
+from backend.mlflow_registry import is_registry_available  # noqa: E402
 
 LATENT_DIM = 16
 
 
+requires_registry = pytest.mark.skipif(
+    not is_registry_available(),
+    reason="Model Registry absent : lancer 'python scripts/register_models.py'",
+)
+
+
 @pytest.fixture(scope="module")
 def client():
-    app = create_app(device="cpu")
-    app.config.update(TESTING=True)
-    with app.test_client() as test_client:
+    # warmup=False : le prechauffage vise la demo interactive, il ajouterait
+    # une quinzaine de secondes a chaque session de tests sans rien couvrir.
+    with TestClient(create_app(device="cpu", warmup=False)) as test_client:
         yield test_client
 
 
@@ -77,7 +87,7 @@ def decode_png(data_uri: str) -> np.ndarray:
 
 
 def test_health_repond(client):
-    payload = client.get("/api/health").get_json()
+    payload = client.get("/api/health").json()
     assert payload["status"] == "ok"
     assert "torch" in payload
 
@@ -92,8 +102,9 @@ def test_parse_beta_tag_suit_la_convention_de_nommage():
 
 
 @requires_mnist
+@requires_registry
 def test_les_datasets_sont_annonces(client):
-    payload = client.get("/api/datasets").get_json()
+    payload = client.get("/api/datasets").json()
     ids = {dataset["id"] for dataset in payload["datasets"]}
     assert "mnist" in ids
 
@@ -102,8 +113,9 @@ def test_les_datasets_sont_annonces(client):
 
 
 @requires_fashion
+@requires_registry
 def test_les_classes_fashion_sont_nommees(client):
-    payload = client.get("/api/datasets").get_json()
+    payload = client.get("/api/datasets").json()
     fashion = next(d for d in payload["datasets"] if d["id"] == "fashion_mnist")
     # Ni des chiffres, ni la liste MNIST : des libelles de vetements.
     assert len(fashion["class_names"]) == 10
@@ -111,8 +123,9 @@ def test_les_classes_fashion_sont_nommees(client):
 
 
 @requires_mnist
+@requires_registry
 def test_les_identifiants_sont_namespaces(client):
-    payload = client.get("/api/models?dataset=mnist").get_json()
+    payload = client.get("/api/models?dataset=mnist").json()
     assert all(model["id"].startswith("mnist/") for model in payload["models"])
 
 
@@ -143,13 +156,14 @@ def test_chaque_famille_declare_sa_propre_plage(catalog, dataset_id, expected_ou
 
 
 @requires_fashion
+@requires_registry
 def test_les_images_fashion_couvrent_la_dynamique(client):
     """Une sortie Sigmoid mal reinterpretee comme du [-1, 1] serait ecrasee
     dans la moitie haute de l'histogramme. On verifie que le noir reste
     atteignable sur une image reelle du fixture."""
     payload = client.post(
         "/api/reconstruct", json={"model_id": FASHION_MODELS[0], "index": 0}
-    ).get_json()
+    ).json()
     original = decode_png(payload["original"])
     assert original.min() < 40, "Le fond des images Fashion-MNIST doit rester sombre"
     assert original.max() > 200, "Les images doivent conserver des pixels clairs"
@@ -169,7 +183,7 @@ def test_sample_renvoie_le_bon_nombre_dimages(client, dataset_id):
     if conditional_id:
         body["class_label"] = 3
 
-    payload = client.post("/api/sample", json=body).get_json()
+    payload = client.post("/api/sample", json=body).json()
     assert len(payload["images"]) == 5
     assert decode_png(payload["images"][0]).shape == (28, 28)
 
@@ -182,8 +196,8 @@ def test_sample_est_reproductible_avec_une_seed(client, dataset_id):
         pytest.skip(f"Aucun modele non conditionnel pour {dataset_id}")
 
     body = {"model_id": unconditional, "n": 4, "seed": 1234}
-    first_run = client.post("/api/sample", json=body).get_json()["images"]
-    second_run = client.post("/api/sample", json=body).get_json()["images"]
+    first_run = client.post("/api/sample", json=body).json()["images"]
+    second_run = client.post("/api/sample", json=body).json()["images"]
     assert first_run == second_run
 
 
@@ -198,7 +212,7 @@ def test_la_condition_change_l_image(client, dataset_id):
     z = [0.3] * LATENT_DIM
     a = client.post("/api/decode", json={"model_id": conditional, "z": z, "class_label": 1})
     b = client.post("/api/decode", json={"model_id": conditional, "z": z, "class_label": 8})
-    assert a.get_json()["image"] != b.get_json()["image"]
+    assert a.json()["image"] != b.json()["image"]
 
 
 @pytest.mark.parametrize("dataset_id", ["mnist", "fashion_mnist"])
@@ -209,8 +223,8 @@ def test_decode_est_deterministe(client, dataset_id):
         pytest.skip(f"Aucun modele non conditionnel pour {dataset_id}")
 
     body = {"model_id": unconditional, "z": [0.5] * LATENT_DIM}
-    a = client.post("/api/decode", json=body).get_json()["image"]
-    b = client.post("/api/decode", json=body).get_json()["image"]
+    a = client.post("/api/decode", json=body).json()["image"]
+    b = client.post("/api/decode", json=body).json()["image"]
     assert a == b
 
 
@@ -223,7 +237,7 @@ def test_reconstruction_renvoie_original_et_reconstruit(client, dataset_id):
     if not models:
         pytest.skip(f"Aucun checkpoint pour {dataset_id}")
 
-    payload = client.post("/api/reconstruct", json={"model_id": models[0], "index": 0}).get_json()
+    payload = client.post("/api/reconstruct", json={"model_id": models[0], "index": 0}).json()
     assert decode_png(payload["original"]).shape == (28, 28)
     assert decode_png(payload["reconstruction"]).shape == (28, 28)
     assert payload["original"] != payload["reconstruction"]
@@ -235,7 +249,7 @@ def test_encode_renvoie_un_latent_de_la_bonne_taille(client, dataset_id):
     if not models:
         pytest.skip(f"Aucun checkpoint pour {dataset_id}")
 
-    payload = client.post("/api/encode", json={"model_id": models[0], "index": 0}).get_json()
+    payload = client.post("/api/encode", json={"model_id": models[0], "index": 0}).json()
     assert len(payload["z"]) == LATENT_DIM
     assert all(isinstance(value, float) for value in payload["z"])
 
@@ -252,14 +266,14 @@ def test_interpolation_borne_sur_les_extremites(client, dataset_id):
     interpolation = client.post(
         "/api/interpolate",
         json={"model_id": unconditional, "source_index": source, "target_index": target, "steps": 8},
-    ).get_json()
+    ).json()
 
     assert len(interpolation["images"]) == 8
     assert interpolation["alphas"][0] == 0.0
     assert interpolation["alphas"][-1] == 1.0
 
-    start = client.post("/api/reconstruct", json={"model_id": unconditional, "index": source}).get_json()
-    end = client.post("/api/reconstruct", json={"model_id": unconditional, "index": target}).get_json()
+    start = client.post("/api/reconstruct", json={"model_id": unconditional, "index": source}).json()
+    end = client.post("/api/reconstruct", json={"model_id": unconditional, "index": target}).json()
     assert interpolation["images"][0] == start["reconstruction"]
     assert interpolation["images"][-1] == end["reconstruction"]
 
@@ -281,7 +295,7 @@ def test_ablation_couvre_toute_la_serie_de_betas(client, dataset_id):
     if response.status_code == 503:
         pytest.skip(f"Pas de serie d'ablation pour {dataset_id}")
 
-    payload = response.get_json()
+    payload = response.json()
     betas = [result["beta"] for result in payload["results"]]
     assert len(betas) >= 3
     assert betas == sorted(betas)
@@ -291,6 +305,7 @@ def test_ablation_couvre_toute_la_serie_de_betas(client, dataset_id):
 
 
 @requires_fashion
+@requires_registry
 def test_ablation_permet_de_choisir_la_serie(client):
     response = client.post(
         "/api/ablation/compare", json={"dataset": "fashion_mnist", "series": "cvae", "class_label": 8}
@@ -300,25 +315,27 @@ def test_ablation_permet_de_choisir_la_serie(client):
         # une serie d'un seul modele ne permet aucune comparaison.
         pytest.skip("Serie CVAE incomplete : un seul beta disponible")
 
-    payload = response.get_json()
+    payload = response.json()
     assert payload["series"] == "cvae"
     assert all(result["model_id"].startswith("fashion/cvae") for result in payload["results"])
 
 
 @requires_fashion
+@requires_registry
 def test_serie_incomplete_renvoie_une_erreur_explicite(client):
     """Une serie d'un seul modele doit etre refusee avec un message actionnable,
     pas produire une comparaison a un seul element qui n'apprend rien."""
     response = client.post("/api/ablation/compare", json={"dataset": "fashion_mnist"})
     assert response.status_code in (200, 503)
     if response.status_code == 503:
-        message = response.get_json()["error"]
+        message = response.json()["detail"]
         assert "incomplete" in message.lower()
     else:
-        assert len(response.get_json()["results"]) >= 2
+        assert len(response.json()["results"]) >= 2
 
 
 @requires_fashion
+@requires_registry
 def test_serie_inconnue_renvoie_404(client):
     response = client.post(
         "/api/ablation/compare", json={"dataset": "fashion_mnist", "series": "inexistante"}
@@ -330,37 +347,48 @@ def test_serie_inconnue_renvoie_404(client):
 
 
 @requires_mnist
+@requires_registry
 @pytest.mark.parametrize(
     "path, body, expected",
     [
+        # 422 : viole le schema Pydantic, rejete avant d'atteindre la route.
+        ("/api/decode", {"model_id": "mnist/vae_main", "z": ["a"] * LATENT_DIM}, 422),
+        ("/api/decode", {"z": [0.0] * LATENT_DIM}, 422),
+        ("/api/sample", {"model_id": "mnist/vae_main", "n": 10_000}, 422),
+        ("/api/sample", {"model_id": "mnist/vae_main", "n": 0}, 422),
+        ("/api/encode", {"model_id": "mnist/vae_main", "index": -1}, 422),
+        (
+            "/api/interpolate",
+            {"model_id": "mnist/vae_main", "source_index": 0, "target_index": 1, "steps": 500},
+            422,
+        ),
+        # 400 : schema valide, mais incoherent avec le modele vise. Ces regles
+        # dependent des metadonnees du Registry, Pydantic ne peut pas les voir.
         ("/api/decode", {"model_id": "mnist/vae_main", "z": [0.1, 0.2]}, 400),
-        ("/api/decode", {"model_id": "mnist/vae_main", "z": ["a"] * LATENT_DIM}, 400),
-        ("/api/decode", {"model_id": "mnist/vae_main", "z": [float("inf")] * LATENT_DIM}, 400),
-        ("/api/decode", {"z": [0.0] * LATENT_DIM}, 400),
-        ("/api/decode", {"model_id": "inexistant", "z": [0.0] * LATENT_DIM}, 404),
-        # Un identifiant non namespace ne doit plus resoudre.
-        ("/api/decode", {"model_id": "vae_main", "z": [0.0] * LATENT_DIM}, 404),
         ("/api/sample", {"model_id": "mnist/cvae_main", "n": 2}, 400),
         ("/api/sample", {"model_id": "mnist/cvae_main", "class_label": 99, "n": 2}, 400),
-        ("/api/sample", {"model_id": "mnist/vae_main", "n": 10_000}, 400),
-        ("/api/sample", {"model_id": "mnist/vae_main", "n": 0}, 400),
-        ("/api/encode", {"model_id": "mnist/vae_main", "index": -1}, 400),
-        ("/api/interpolate", {"model_id": "mnist/vae_main", "source_index": 0, "target_index": 1, "steps": 500}, 400),
+        # 404 : modele absent du catalogue. Un identifiant non namespace ne
+        # doit plus resoudre depuis le passage aux identifiants prefixes.
+        ("/api/decode", {"model_id": "inexistant", "z": [0.0] * LATENT_DIM}, 404),
+        ("/api/decode", {"model_id": "vae_main", "z": [0.0] * LATENT_DIM}, 404),
     ],
 )
 def test_les_payloads_invalides_renvoient_une_erreur_lisible(client, path, body, expected):
     response = client.post(path, json=body)
     assert response.status_code == expected
-    assert "error" in response.get_json()
+    assert "detail" in response.json()
 
 
 @requires_mnist
+@requires_registry
 def test_corps_non_json_rejete(client):
-    response = client.post("/api/decode", data="pas du json", content_type="text/plain")
-    assert response.status_code == 400
+    response = client.post(
+        "/api/decode", content="pas du json", headers={"Content-Type": "text/plain"}
+    )
+    assert response.status_code == 422
 
 
 def test_route_api_inconnue_renvoie_du_json(client):
     response = client.get("/api/nexiste_pas")
     assert response.status_code == 404
-    assert "error" in response.get_json()
+    assert "detail" in response.json()

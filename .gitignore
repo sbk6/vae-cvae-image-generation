@@ -31,3 +31,12 @@ Thumbs.db
 
 # Les checkpoints et figures de reports/ sont volontairement versionnes :
 # ils sont le livrable des seances precedentes et alimentent la demo.
+
+# Store MLflow de l'application (base + artefacts empaquetes).
+# Regenerable a tout moment par : python scripts/register_models.py
+# Chaque modele empaquete duplique son checkpoint, d'ou plusieurs centaines
+# de Mo qui n'ont rien a faire dans le depot.
+/mlflow.db
+/mlflow.db-*
+/mlartifacts/
+/mlruns/

@@ -1,201 +1,337 @@
-"""API Flask de demonstration pour les modeles VAE / CVAE de l'equipe.
+"""API FastAPI de demonstration des modeles VAE / CVAE de l'equipe.
 
-Deux datasets sont servis par la meme API :
-- MNIST, via les modeles de `src/` (sortie Tanh, [-1, 1]) ;
-- Fashion-MNIST, via ceux de `projects/david_fashion_mnist/` (Sigmoid, [0, 1]).
+Trois datasets sont servis par la meme API : MNIST (`src/`), Fashion-MNIST
+(`projects/david_fashion_mnist/`) et CelebA (`projects/blaise_celeba/`).
 
-Les deux familles ont des interfaces incompatibles ; elles sont uniformisees
-par les adaptateurs de `backend/adapters/`. Aucune route ci-dessous ne
-manipule un modele directement.
+**Toute l'inference passe par MLflow.** Aucune route ci-dessous n'importe ni
+n'instancie un modele : chacune obtient un `mlflow.pyfunc` charge depuis le
+Model Registry via `backend/mlflow_registry.py`. Le catalogue ne sert plus
+qu'a decrire ce qui existe (libelles, datasets, series d'ablation) et a savoir
+quoi enregistrer.
+
+Le contrat du modele packagé est defini dans `backend/mlflow_pyfunc.py` : une
+colonne `op` (sample, decode, encode) et des colonnes facultatives. Il est
+identique en appel direct et en HTTP, donc les memes modeles restent servables
+par `mlflow models serve`.
 
 Deux modes de service :
 - developpement : le frontend tourne sur Vite (:5173) et appelle cette API
-  (:8000) en cross-origin, d'ou flask-cors ;
-- demonstration : le build React est servi directement par Flask, tout tient
-  sur un seul port et un seul container.
+  (:8000) en cross-origin, d'ou CORSMiddleware ;
+- demonstration : le build React est servi par l'API, tout tient sur un port.
 """
 from __future__ import annotations
 
 import csv
 import json
 import sys
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+import pandas as pd
 import torch
-from flask import Flask, jsonify, request, send_from_directory
-from flask_cors import CORS
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
 
-from backend import inference
-from backend.catalog import Catalog
+from backend.catalog import Catalog, ModelEntry
 from backend.fixtures import FixtureRegistry
+from backend.mlflow_pyfunc import base64_png_to_array, image_to_base64_png
+from backend.mlflow_registry import RegistryGateway, is_registry_available, tracking_uri
 
 FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
 FASHION_RESULTS = ROOT_DIR / "projects" / "david_fashion_mnist" / "results"
+CELEBA_RESULTS = ROOT_DIR / "projects" / "blaise_celeba" / "results"
+
 MAX_BATCH = 64
 MAX_STEPS = 32
 
-
-class ApiError(Exception):
-    """Erreur applicative renvoyee en JSON avec un code HTTP explicite."""
-
-    def __init__(self, message: str, status: int = 400) -> None:
-        super().__init__(message)
-        self.message = message
-        self.status = status
+DATA_URI_PREFIX = "data:image/png;base64,"
 
 
-def _payload() -> Dict[str, Any]:
-    data = request.get_json(silent=True)
-    if data is None:
-        raise ApiError("Corps de requete JSON attendu.")
-    if not isinstance(data, dict):
-        raise ApiError("Le corps JSON doit etre un objet.")
-    return data
+def as_data_uri(encoded: str) -> str:
+    """Le modele MLflow renvoie du base64 nu ; le navigateur attend un data-URI."""
+    return DATA_URI_PREFIX + encoded
 
 
-def _require_int(data: Dict[str, Any], key: str, minimum: int, maximum: int, default: Optional[int] = None) -> int:
-    if key not in data or data[key] is None:
-        if default is None:
-            raise ApiError(f"Champ '{key}' manquant.")
-        return default
-    value = data[key]
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ApiError(f"'{key}' doit etre un entier.")
-    if value < minimum or value > maximum:
-        raise ApiError(f"'{key}' doit etre compris entre {minimum} et {maximum} (recu {value}).")
-    return value
+# --------------------------------------------------------------------- #
+# Schemas de requete
+# --------------------------------------------------------------------- #
+
+class SampleRequest(BaseModel):
+    model_id: str
+    n: int = Field(default=8, ge=1, le=MAX_BATCH)
+    class_label: Optional[int] = Field(default=None, ge=0)
+    seed: Optional[int] = None
 
 
-def _optional_seed(data: Dict[str, Any]) -> Optional[int]:
-    value = data.get("seed")
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ApiError("'seed' doit etre un entier ou null.")
-    return value
+class DecodeRequest(BaseModel):
+    model_id: str
+    z: List[float]
+    class_label: Optional[int] = Field(default=None, ge=0)
 
 
-def create_app(device: Optional[str] = None) -> Flask:
-    app = Flask(__name__, static_folder=None)
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+class FixtureRequest(BaseModel):
+    model_id: str
+    index: int = Field(ge=0)
+    class_label: Optional[int] = Field(default=None, ge=0)
 
+
+class InterpolateRequest(BaseModel):
+    model_id: str
+    source_index: int = Field(ge=0)
+    target_index: int = Field(ge=0)
+    steps: int = Field(default=12, ge=2, le=MAX_STEPS)
+    class_label: Optional[int] = Field(default=None, ge=0)
+
+
+class AblationRequest(BaseModel):
+    dataset: str = "mnist"
+    series: Optional[str] = None
+    z: Optional[List[float]] = None
+    seed: Optional[int] = None
+    class_label: Optional[int] = Field(default=None, ge=0)
+
+
+# --------------------------------------------------------------------- #
+# Application
+# --------------------------------------------------------------------- #
+
+def create_app(device: Optional[str] = None, warmup: bool = True) -> FastAPI:
     catalog = Catalog(device=device)
     fixtures = FixtureRegistry()
+    gateway = RegistryGateway()
 
-    # ------------------------------------------------------------------ #
-    # Resolution des parametres communs
-    # ------------------------------------------------------------------ #
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        # Le tout premier chargement MLflow coute une trentaine de secondes
+        # (initialisation du store et de ses dependances), les suivants moins
+        # d'une seconde. On l'absorbe au demarrage plutot que sur le premier
+        # clic de l'utilisateur.
+        #
+        # Dans un thread separe, et non directement ici : le lifespan bloque
+        # l'acceptation des connexions tant qu'il n'a pas rendu la main, et le
+        # serveur paraitrait mort pendant tout le prechauffage.
+        def preload() -> None:
+            try:
+                models = catalog.models()
+                if models:
+                    gateway.load(models[0].model_id)
+            except Exception as error:  # pragma: no cover - demarrage degrade
+                print(f"Prechauffage MLflow ignore : {error}")
 
-    def resolve_model(data: Dict[str, Any]):
-        """Renvoie (entree du catalogue, adaptateur charge)."""
-        model_id = data.get("model_id")
-        if not isinstance(model_id, str) or not model_id:
-            raise ApiError("Champ 'model_id' manquant.")
+        if warmup and is_registry_available():
+            threading.Thread(target=preload, name="mlflow-warmup", daemon=True).start()
+        yield
+
+    app = FastAPI(
+        title="Demonstration VAE / CVAE",
+        description=(
+            "Generation d'images a partir des modeles VAE et CVAE entraines par l'equipe "
+            "sur MNIST, Fashion-MNIST et CelebA. Toute l'inference passe par le MLflow "
+            "Model Registry."
+        ),
+        version="2.0.0",
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # ----------------------------------------------------------------- #
+    # Aides communes
+    # ----------------------------------------------------------------- #
+
+    def resolve_entry(model_id: str) -> ModelEntry:
         try:
-            return catalog.entry(model_id), catalog.adapter(model_id)
+            return catalog.entry(model_id)
         except KeyError:
-            raise ApiError(f"Modele inconnu : {model_id}", status=404)
-        except FileNotFoundError as exc:
-            raise ApiError(str(exc), status=503)
+            raise HTTPException(status_code=404, detail=f"Modele inconnu : {model_id}")
+
+    def resolve_model(model_id: str):
+        """Renvoie (entree de catalogue, modele pyfunc, metadonnees du Registry)."""
+        entry = resolve_entry(model_id)
+        try:
+            return entry, gateway.load(model_id), gateway.describe(model_id)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=503, detail=str(error))
+        except KeyError as error:
+            raise HTTPException(status_code=503, detail=str(error).strip("'"))
 
     def resolve_fixtures(dataset_id: str):
-        dataset = catalog.dataset(dataset_id)
+        try:
+            dataset = catalog.dataset(dataset_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error))
         store = fixtures.get(dataset_id, dataset.fixture_name)
         if not store.available:
-            raise ApiError(
-                f"Fixture d'images absent pour {dataset.label}. "
-                "Le generer avec : python scripts/build_demo_fixtures.py",
-                status=503,
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Fixture d'images absent pour {dataset.label}. Le generer avec : "
+                    "python scripts/build_demo_fixtures.py"
+                ),
             )
         return store
 
-    def resolve_class(data: Dict[str, Any], adapter, required: bool) -> Optional[int]:
-        """Valide la classe demandee, pertinente uniquement si le modele est conditionnel."""
-        if not adapter.is_conditional:
+    def check_class_label(description: Dict[str, Any], class_label: Optional[int]) -> Optional[float]:
+        """Valide la classe demandee au regard des metadonnees du Registry."""
+        if not description.get("conditional"):
             return None
-        maximum = adapter.num_conditions - 1
-        if not required and data.get("class_label") is None:
-            return None
-        return _require_int(data, "class_label", 0, maximum)
+        if class_label is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Ce modele est conditionnel : 'class_label' est obligatoire.",
+            )
+        maximum = int(description.get("num_conditions") or 0) - 1
+        if not 0 <= class_label <= maximum:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'class_label' doit etre compris entre 0 et {maximum} (recu {class_label}).",
+            )
+        return float(class_label)
 
-    def encode_fixture(adapter, store, index: int) -> torch.Tensor:
-        """Charge une image du fixture et la normalise pour l'adaptateur cible."""
+    def check_latent(description: Dict[str, Any], z: List[float]) -> str:
+        """Verifie la dimension du vecteur latent et le serialise pour MLflow."""
+        expected = int(description.get("latent_dim") or 0)
+        if expected and len(z) != expected:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'z' doit contenir exactement {expected} valeurs (recu {len(z)}).",
+            )
+        return json.dumps(z)
+
+    def invoke(model, **columns) -> Dict[str, Any]:
+        """Appelle le modele MLflow avec une ligne complete.
+
+        Toutes les colonnes de la signature doivent etre presentes, meme
+        vides : MLflow refuse une entree dont une colonne declaree manque.
+        """
+        row = {
+            "op": "sample",
+            "z": None,
+            "class_label": None,
+            "image_base64": None,
+            "n": None,
+            "seed": None,
+        }
+        row.update(columns)
+        try:
+            return model.predict(pd.DataFrame([row]))[0]
+        except HTTPException:
+            raise
+        except Exception as error:
+            # Les erreurs metier levees dans le modele (classe absente, z
+            # malforme) sont des erreurs de requete, pas des pannes serveur.
+            raise HTTPException(status_code=400, detail=str(error).split("\n")[-1][:300])
+
+    def encode_fixture_image(model, store, index: int, class_label: Optional[float]) -> List[float]:
+        """Encode une image du fixture en passant par le modele MLflow."""
         try:
             raw = store.raw(index)
-        except ValueError as exc:
-            raise ApiError(str(exc))
-        return adapter.prepare_input(raw)
-
-    # ------------------------------------------------------------------ #
-    # Metadonnees
-    # ------------------------------------------------------------------ #
-
-    @app.get("/api/health")
-    def health():
-        datasets = catalog.available_datasets()
-        return jsonify(
-            {
-                "status": "ok",
-                "device": str(catalog.device),
-                "torch": torch.__version__,
-                "datasets": [dataset.dataset_id for dataset in datasets],
-                "models_available": [model.model_id for model in catalog.models()],
-            }
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        payload = invoke(
+            model,
+            op="encode",
+            image_base64=image_to_base64_png(raw),
+            class_label=class_label,
         )
+        return payload["z"]
 
-    @app.get("/api/datasets")
+    # ----------------------------------------------------------------- #
+    # Metadonnees
+    # ----------------------------------------------------------------- #
+
+    @app.get("/api/health", tags=["metadonnees"])
+    def health():
+        return {
+            "status": "ok",
+            "device": str(catalog.device),
+            "torch": torch.__version__,
+            "inference": "mlflow-registry",
+            "registry_available": is_registry_available(),
+            "registry_uri": tracking_uri(),
+            "registered_models": gateway.available_names(),
+            "loaded_models": gateway.loaded_ids(),
+            "datasets": [dataset.dataset_id for dataset in catalog.available_datasets()],
+        }
+
+    @app.get("/api/datasets", tags=["metadonnees"])
     def list_datasets():
-        """Datasets disposant d'au moins un checkpoint utilisable."""
         datasets = catalog.available_datasets()
         if not datasets:
-            raise ApiError(
-                "Aucun checkpoint trouve. Lancer 'make train-vae' et 'make train-cvae', "
-                "et deposer les checkpoints Fashion-MNIST dans "
-                "projects/david_fashion_mnist/checkpoints/.",
-                status=503,
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Aucun checkpoint trouve. Entrainer les modeles, deposer les checkpoints "
+                    "Fashion-MNIST et CelebA, puis lancer : python scripts/register_models.py"
+                ),
             )
         payload = []
         for dataset in datasets:
             metadata = catalog.dataset_metadata(dataset)
-            store = fixtures.get(dataset.dataset_id, dataset.fixture_name)
-            metadata["fixtures_available"] = store.available
+            metadata["fixtures_available"] = fixtures.get(
+                dataset.dataset_id, dataset.fixture_name
+            ).available
             payload.append(metadata)
-        return jsonify({"datasets": payload})
+        return {"datasets": payload}
 
-    @app.get("/api/models")
-    def list_models():
-        dataset_id = request.args.get("dataset")
+    @app.get("/api/models", tags=["metadonnees"])
+    def list_models(dataset: Optional[str] = Query(default=None)):
         try:
-            models = catalog.models(dataset_id)
-        except KeyError as exc:
-            raise ApiError(str(exc), status=404)
+            models = catalog.models(dataset)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error))
         if not models:
-            raise ApiError("Aucun modele disponible pour ce dataset.", status=503)
-        return jsonify({"models": [catalog.model_metadata(model) for model in models]})
+            raise HTTPException(status_code=503, detail="Aucun modele disponible pour ce dataset.")
 
-    @app.get("/api/metrics")
-    def metrics():
-        """Resultats chiffres deja produits par les scripts d'evaluation."""
-        dataset_id = request.args.get("dataset", "mnist")
+        payload = []
+        for entry in models:
+            metadata = catalog.model_metadata(entry)
+            # Les dimensions viennent du Registry, pas d'un adaptateur charge.
+            try:
+                description = gateway.describe(entry.model_id)
+                metadata.update(
+                    {
+                        "latent_dim": description["latent_dim"],
+                        "num_conditions": description["num_conditions"],
+                        "registered_name": description["registered_name"],
+                        "version": description["version"],
+                        "registered": True,
+                    }
+                )
+            except Exception:
+                # Checkpoint present mais pas encore empaquete : on l'annonce
+                # plutot que de le masquer, l'action corrective etant connue.
+                metadata["registered"] = False
+            payload.append(metadata)
+        return {"models": payload}
+
+    @app.get("/api/metrics", tags=["metadonnees"])
+    def metrics(dataset: str = Query(default="mnist")):
         result: Dict[str, Any] = {}
 
-        if dataset_id == "mnist":
+        if dataset == "mnist":
             comparison = ROOT_DIR / "reports" / "experiments" / "comparison.json"
             if comparison.exists():
                 result["comparison"] = json.loads(comparison.read_text(encoding="utf-8"))
-
             ablation = ROOT_DIR / "reports" / "experiments" / "ablation" / "results.json"
             if ablation.exists():
                 result["ablation"] = json.loads(ablation.read_text(encoding="utf-8"))
 
-        elif dataset_id == "fashion_mnist":
-            # David produit ses resultats en CSV plutot qu'en JSON : on les
-            # convertit ici pour que le frontend n'ait qu'un seul format a lire.
+        elif dataset == "fashion_mnist":
+            # David produit ses resultats en CSV : on les convertit ici pour que
+            # le frontend n'ait qu'un seul format a lire.
             evaluation = FASHION_RESULTS / "evaluation_metrics.csv"
             if evaluation.exists():
                 with open(evaluation, newline="", encoding="utf-8") as handle:
@@ -212,302 +348,268 @@ def create_app(device: Optional[str] = None) -> Flask:
                     }
                     for row in rows
                 ]
+
+        elif dataset == "celeba":
+            comparison = CELEBA_RESULTS / "experiments" / "comparison.json"
+            if comparison.exists():
+                result["comparison"] = json.loads(comparison.read_text(encoding="utf-8"))
+            ablation = CELEBA_RESULTS / "experiments" / "ablation" / "results.json"
+            if ablation.exists():
+                result["ablation"] = json.loads(ablation.read_text(encoding="utf-8"))
         else:
-            raise ApiError(f"Dataset inconnu : {dataset_id}", status=404)
+            raise HTTPException(status_code=404, detail=f"Dataset inconnu : {dataset}")
 
         if not result:
-            raise ApiError("Aucun resultat d'evaluation disponible pour ce dataset.", status=503)
-        return jsonify(result)
+            raise HTTPException(
+                status_code=503,
+                detail="Aucun resultat d'evaluation disponible pour ce dataset.",
+            )
+        return result
 
-    @app.get("/api/fixtures")
-    def list_fixtures():
-        """Vignettes des images reelles disponibles, groupees par classe."""
-        dataset_id = request.args.get("dataset", "mnist")
-        try:
-            dataset = catalog.dataset(dataset_id)
-        except KeyError as exc:
-            raise ApiError(str(exc), status=404)
-
-        store = resolve_fixtures(dataset_id)
+    @app.get("/api/fixtures", tags=["metadonnees"])
+    def list_fixtures(dataset: str = Query(default="mnist")):
+        store = resolve_fixtures(dataset)
+        dataset_entry = catalog.dataset(dataset)
         grouped = store.indices_by_class()
         payload = {
             str(label): [
-                {"index": index, "image": inference.raw_to_png_b64(store.raw(index))}
+                {"index": index, "image": as_data_uri(image_to_base64_png(store.raw(index)))}
                 for index in indices
             ]
             for label, indices in sorted(grouped.items())
         }
-        return jsonify(
-            {
-                "by_class": payload,
-                "count": len(store),
-                "class_names": dataset.class_names,
-            }
-        )
+        return {
+            "by_class": payload,
+            "count": len(store),
+            "class_names": dataset_entry.class_names,
+        }
 
-    # ------------------------------------------------------------------ #
+    # ----------------------------------------------------------------- #
     # Generation
-    # ------------------------------------------------------------------ #
+    # ----------------------------------------------------------------- #
 
-    @app.post("/api/sample")
-    def sample():
-        """Echantillonne n images depuis la prior N(0, I)."""
-        data = _payload()
-        entry, adapter = resolve_model(data)
-        n = _require_int(data, "n", 1, MAX_BATCH, default=8)
-        class_label = resolve_class(data, adapter, required=True)
-        seed = _optional_seed(data)
+    @app.post("/api/sample", tags=["generation"])
+    def sample(request: SampleRequest):
+        entry, model, description = resolve_model(request.model_id)
+        class_label = check_class_label(description, request.class_label)
 
-        images = adapter.generate(n, class_label, seed)
-        return jsonify(
-            {
-                "images": inference.batch_to_png_b64(images, adapter),
-                "model_id": entry.model_id,
-                "class_label": class_label,
-                "seed": seed,
-            }
+        payload = invoke(
+            model,
+            op="sample",
+            n=float(request.n),
+            seed=None if request.seed is None else float(request.seed),
+            class_label=class_label,
         )
+        return {
+            "images": [as_data_uri(image) for image in payload["images_base64"]],
+            "model_id": entry.model_id,
+            "class_label": request.class_label if description.get("conditional") else None,
+            "seed": request.seed,
+        }
 
-    @app.post("/api/decode")
-    def decode():
-        """Decode un vecteur latent fourni explicitement (curseurs d'exploration)."""
-        data = _payload()
-        entry, adapter = resolve_model(data)
-        class_label = resolve_class(data, adapter, required=True)
-
-        try:
-            z = adapter.validate_latent(data.get("z"))
-        except ValueError as exc:
-            raise ApiError(str(exc))
-
-        images = adapter.decode(z.unsqueeze(0), class_label)
-        return jsonify(
-            {
-                "image": inference.tensor_to_png_b64(images[0], adapter),
-                "model_id": entry.model_id,
-            }
+    @app.post("/api/decode", tags=["generation"])
+    def decode(request: DecodeRequest):
+        entry, model, description = resolve_model(request.model_id)
+        class_label = check_class_label(description, request.class_label)
+        payload = invoke(
+            model,
+            op="decode",
+            z=check_latent(description, request.z),
+            class_label=class_label,
         )
+        return {"image": as_data_uri(payload["image_base64"]), "model_id": entry.model_id}
 
-    @app.post("/api/encode")
-    def encode():
-        """Encode une image reelle du fixture et renvoie mu (pour initialiser les curseurs)."""
-        data = _payload()
-        entry, adapter = resolve_model(data)
+    @app.post("/api/encode", tags=["generation"])
+    def encode(request: FixtureRequest):
+        entry, model, description = resolve_model(request.model_id)
         store = resolve_fixtures(entry.dataset_id)
 
-        index = _require_int(data, "index", 0, max(len(store) - 1, 0))
-        class_label = resolve_class(data, adapter, required=False)
-        if adapter.is_conditional and class_label is None:
-            class_label = store.label_of(index)
+        class_label = request.class_label
+        if description.get("conditional") and class_label is None:
+            class_label = store.label_of(request.index)
+        checked = check_class_label(description, class_label)
 
-        x = encode_fixture(adapter, store, index)
-        mu = adapter.encode(x, class_label)
-        return jsonify(
-            {
-                "z": mu[0].detach().cpu().tolist(),
-                "index": index,
-                "true_label": store.label_of(index),
-                "model_id": entry.model_id,
-            }
-        )
+        z = encode_fixture_image(model, store, request.index, checked)
+        return {
+            "z": z,
+            "index": request.index,
+            "true_label": store.label_of(request.index),
+            "model_id": entry.model_id,
+        }
 
-    @app.post("/api/reconstruct")
-    def reconstruct():
-        """Encode puis decode une image reelle : montre la perte de reconstruction a l'oeil."""
-        data = _payload()
-        entry, adapter = resolve_model(data)
+    @app.post("/api/reconstruct", tags=["generation"])
+    def reconstruct(request: FixtureRequest):
+        entry, model, description = resolve_model(request.model_id)
         store = resolve_fixtures(entry.dataset_id)
 
-        index = _require_int(data, "index", 0, max(len(store) - 1, 0))
-        class_label = resolve_class(data, adapter, required=False)
-        if adapter.is_conditional and class_label is None:
-            class_label = store.label_of(index)
+        class_label = request.class_label
+        if description.get("conditional") and class_label is None:
+            class_label = store.label_of(request.index)
+        checked = check_class_label(description, class_label)
 
-        x = encode_fixture(adapter, store, index)
-        mu = adapter.encode(x, class_label)
-        reconstruction = adapter.decode(mu, class_label)
+        z = encode_fixture_image(model, store, request.index, checked)
+        payload = invoke(model, op="decode", z=json.dumps(z), class_label=checked)
 
-        return jsonify(
-            {
-                # L'original vient du fixture brut : il ne depend d'aucun modele.
-                "original": inference.raw_to_png_b64(store.raw(index)),
-                "reconstruction": inference.tensor_to_png_b64(reconstruction[0], adapter),
-                "index": index,
-                "true_label": store.label_of(index),
-                "model_id": entry.model_id,
-            }
-        )
+        return {
+            # L'original vient du fixture brut : il ne depend d'aucun modele.
+            "original": as_data_uri(image_to_base64_png(store.raw(request.index))),
+            "reconstruction": as_data_uri(payload["image_base64"]),
+            "index": request.index,
+            "true_label": store.label_of(request.index),
+            "model_id": entry.model_id,
+        }
 
-    @app.post("/api/interpolate")
-    def interpolate():
-        """Interpole entre deux images reelles dans l'espace latent."""
-        data = _payload()
-        entry, adapter = resolve_model(data)
+    @app.post("/api/interpolate", tags=["generation"])
+    def interpolate(request: InterpolateRequest):
+        entry, model, description = resolve_model(request.model_id)
         store = resolve_fixtures(entry.dataset_id)
 
-        last = max(len(store) - 1, 0)
-        steps = _require_int(data, "steps", 2, MAX_STEPS, default=12)
-        source = _require_int(data, "source_index", 0, last)
-        target = _require_int(data, "target_index", 0, last)
-
-        class_label = resolve_class(data, adapter, required=False)
-        if adapter.is_conditional and class_label is None:
+        conditional = bool(description.get("conditional"))
+        class_label = request.class_label
+        if conditional and class_label is None:
             # Condition figee sur la classe de depart : on observe alors la
             # morphologie encodee dans z, pas le changement de condition.
-            class_label = store.label_of(source)
+            class_label = store.label_of(request.source_index)
+        checked = check_class_label(description, class_label)
 
-        x_source = encode_fixture(adapter, store, source)
-        x_target = encode_fixture(adapter, store, target)
+        source_label = float(store.label_of(request.source_index)) if conditional else None
+        target_label = float(store.label_of(request.target_index)) if conditional else None
+        z_source = encode_fixture_image(model, store, request.source_index, source_label)
+        z_target = encode_fixture_image(model, store, request.target_index, target_label)
 
-        z_source = adapter.encode(x_source, store.label_of(source) if adapter.is_conditional else None)
-        z_target = adapter.encode(x_target, store.label_of(target) if adapter.is_conditional else None)
+        # L'interpolation est calculee ici : le modele MLflow expose decode et
+        # encode, la combinaison lineaire de deux latents releve de l'appelant.
+        steps = request.steps
+        images: List[str] = []
+        alphas: List[float] = []
+        for index in range(steps):
+            alpha = index / (steps - 1)
+            alphas.append(alpha)
+            z = [(1.0 - alpha) * a + alpha * b for a, b in zip(z_source, z_target)]
+            payload = invoke(model, op="decode", z=json.dumps(z), class_label=checked)
+            images.append(as_data_uri(payload["image_base64"]))
 
-        images = adapter.interpolate(z_source[0], z_target[0], steps, class_label)
+        return {
+            "images": images,
+            "alphas": alphas,
+            "source": {
+                "index": request.source_index,
+                "label": store.label_of(request.source_index),
+                "image": as_data_uri(image_to_base64_png(store.raw(request.source_index))),
+            },
+            "target": {
+                "index": request.target_index,
+                "label": store.label_of(request.target_index),
+                "image": as_data_uri(image_to_base64_png(store.raw(request.target_index))),
+            },
+            "model_id": entry.model_id,
+        }
 
-        return jsonify(
-            {
-                "images": inference.batch_to_png_b64(images, adapter),
-                "alphas": inference.alphas_for(steps),
-                "source": {
-                    "index": source,
-                    "label": store.label_of(source),
-                    "image": inference.raw_to_png_b64(store.raw(source)),
-                },
-                "target": {
-                    "index": target,
-                    "label": store.label_of(target),
-                    "image": inference.raw_to_png_b64(store.raw(target)),
-                },
-                "model_id": entry.model_id,
-            }
-        )
-
-    @app.post("/api/ablation/compare")
-    def ablation_compare():
-        """Decode un meme z par tous les modeles d'ablation d'un dataset.
-
-        C'est la vue qui rend l'etude d'ablation tangible : a latent identique,
-        on voit directement l'effet de beta sur l'image produite.
-        """
-        data = _payload()
-        dataset_id = data.get("dataset", "mnist")
+    @app.post("/api/ablation/compare", tags=["generation"])
+    def ablation_compare(request: AblationRequest):
         try:
-            candidates = [m for m in catalog.models(dataset_id) if m.ablation_series]
-        except KeyError as exc:
-            raise ApiError(str(exc), status=404)
+            candidates = [model for model in catalog.models(request.dataset) if model.ablation_series]
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error))
 
-        # Les modeles sont regroupes par serie (vae / cvae) : comparer un VAE
-        # et un CVAE a beta different melangerait deux effets distincts.
-        series: Dict[str, list] = {}
+        # Les modeles sont regroupes par serie : comparer un VAE et un CVAE a
+        # beta different melangerait deux effets distincts.
+        series: Dict[str, List[ModelEntry]] = {}
         for model in candidates:
             series.setdefault(model.ablation_series, []).append(model)
 
-        requested = data.get("series")
-        if requested is not None:
-            if requested not in series:
-                raise ApiError(
-                    f"Serie d'ablation inconnue : {requested}. "
-                    f"Disponibles : {sorted(series)}.",
-                    status=404,
+        if request.series is not None:
+            if request.series not in series:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Serie d'ablation inconnue : {request.series}. Disponibles : {sorted(series)}.",
                 )
-            selected = series[requested]
+            selected = series[request.series]
         else:
-            # A defaut, la serie la plus fournie : c'est celle qui illustre le
-            # mieux l'effet de beta.
             selected = max(series.values(), key=len, default=[])
 
         if len(selected) < 2:
-            raise ApiError(
-                f"Serie d'ablation incomplete pour '{dataset_id}' : "
-                f"{len(selected)} modele(s), il en faut au moins 2.",
-                status=503,
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Serie d'ablation incomplete pour '{request.dataset}' : "
+                    f"{len(selected)} modele(s), il en faut au moins 2."
+                ),
             )
 
-        selected = sorted(selected, key=lambda m: (m.beta is None, m.beta))
-        reference = catalog.adapter(selected[0].model_id)
-        seed = _optional_seed(data)
+        selected = sorted(selected, key=lambda model: (model.beta is None, model.beta))
+        _, reference_model, reference_description = resolve_model(selected[0].model_id)
+        checked = check_class_label(reference_description, request.class_label)
 
-        if data.get("z") is not None:
-            try:
-                z = reference.validate_latent(data.get("z")).unsqueeze(0)
-            except ValueError as exc:
-                raise ApiError(str(exc))
+        if request.z is not None:
+            z_json = check_latent(reference_description, request.z)
+            z_values = request.z
         else:
-            z = reference.sample_latent(1, seed)
-
-        class_label = None
-        if selected[0].conditional:
-            class_label = _require_int(data, "class_label", 0, reference.num_conditions - 1, default=0)
+            # Un z unique est tire une fois puis envoye tel quel a chaque
+            # modele : c'est ce qui rend la comparaison entre betas honnete.
+            # Le tirage dans la prior N(0, I) n'est pas de l'inference, seule
+            # sa dimension depend du modele et elle vient du Registry.
+            latent_dim = int(reference_description.get("latent_dim") or 16)
+            generator = torch.Generator()
+            if request.seed is not None:
+                generator.manual_seed(int(request.seed))
+            else:
+                generator.seed()
+            z_values = torch.randn(latent_dim, generator=generator).tolist()
+            z_json = json.dumps(z_values)
 
         results = []
         for entry in selected:
-            adapter = catalog.adapter(entry.model_id)
-            if adapter.latent_dim != reference.latent_dim:
+            _, model, description = resolve_model(entry.model_id)
+            if description.get("latent_dim") != reference_description.get("latent_dim"):
                 # Comparer des latents de dimensions differentes n'aurait aucun sens.
                 continue
-            image = adapter.decode(z, class_label if adapter.is_conditional else None)
+            label = check_class_label(description, request.class_label)
+            payload = invoke(model, op="decode", z=z_json, class_label=label)
             results.append(
                 {
                     "model_id": entry.model_id,
                     "label": entry.label,
                     "beta": entry.beta,
                     "description": entry.description,
-                    "image": inference.tensor_to_png_b64(image[0], adapter),
+                    "image": as_data_uri(payload["image_base64"]),
                 }
             )
 
-        return jsonify(
-            {
-                "results": results,
-                "z": z[0].detach().cpu().tolist(),
-                "seed": seed,
-                "dataset": dataset_id,
-                "series": selected[0].ablation_series,
-                "available_series": sorted(series),
-            }
-        )
+        return {
+            "results": results,
+            "z": z_values,
+            "seed": request.seed,
+            "dataset": request.dataset,
+            "series": selected[0].ablation_series,
+            "available_series": sorted(series),
+        }
 
-    # ------------------------------------------------------------------ #
-    # Erreurs + service du frontend buildé
-    # ------------------------------------------------------------------ #
+    # ----------------------------------------------------------------- #
+    # Frontend buildé
+    # ----------------------------------------------------------------- #
 
-    @app.errorhandler(ApiError)
-    def handle_api_error(error: ApiError):
-        return jsonify({"error": error.message}), error.status
-
-    @app.errorhandler(500)
-    def handle_internal_error(error):  # pragma: no cover - filet de securite
-        return jsonify({"error": "Erreur interne du serveur."}), 500
-
-    @app.get("/")
-    @app.get("/<path:requested_path>")
+    @app.get("/{requested_path:path}", include_in_schema=False)
     def serve_frontend(requested_path: str = ""):
-        """Sert le build React en mode demonstration.
-
-        En developpement le build n'existe pas : on renvoie un message explicite
-        plutot qu'un 404 muet, pour ne pas laisser croire que l'API est cassee.
-        """
         if requested_path.startswith("api/"):
-            return jsonify({"error": "Endpoint inconnu."}), 404
+            return JSONResponse({"detail": "Endpoint inconnu."}, status_code=404)
 
         if not FRONTEND_DIST.exists():
-            return (
-                jsonify(
-                    {
-                        "message": "API en ligne. Le frontend n'est pas buildé.",
-                        "developpement": "Lancer 'npm run dev' dans frontend/ puis ouvrir http://localhost:5173",
-                        "demonstration": "Lancer 'make demo' pour builder le frontend et le servir ici.",
-                        "api": "/api/health",
-                    }
-                ),
-                200,
+            return JSONResponse(
+                {
+                    "message": "API en ligne. Le frontend n'est pas buildé.",
+                    "developpement": "npm run dev dans frontend/, puis http://localhost:5173",
+                    "demonstration": "make demo builde le frontend et le sert ici.",
+                    "documentation": "/docs",
+                    "api": "/api/health",
+                }
             )
 
         candidate = FRONTEND_DIST / requested_path
         if requested_path and candidate.is_file():
-            return send_from_directory(FRONTEND_DIST, requested_path)
+            return FileResponse(candidate)
         # Fallback SPA : toute autre route est geree cote client.
-        return send_from_directory(FRONTEND_DIST, "index.html")
+        return FileResponse(FRONTEND_DIST / "index.html")
 
     return app
 
@@ -518,19 +620,18 @@ app = create_app()
 if __name__ == "__main__":
     import argparse
 
+    import uvicorn
+
     parser = argparse.ArgumentParser(description="API de demonstration VAE / CVAE")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--device", default="auto", help="cpu, cuda ou auto")
-    parser.add_argument("--debug", action="store_true", help="Rechargement a chaud (developpement)")
+    parser.add_argument("--reload", action="store_true", help="Rechargement a chaud (developpement)")
     args = parser.parse_args()
 
-    application = create_app(device=args.device)
-    if args.debug:
-        application.run(host=args.host, port=args.port, debug=True)
+    if args.reload:
+        uvicorn.run("backend.app:app", host=args.host, port=args.port, reload=True)
     else:
-        # waitress : serveur WSGI de production, multi-thread, dispo sous Windows.
-        from waitress import serve
-
         print(f"API de demonstration sur http://{args.host}:{args.port}")
-        serve(application, host=args.host, port=args.port, threads=4)
+        print(f"Documentation interactive sur http://{args.host}:{args.port}/docs")
+        uvicorn.run(create_app(device=args.device), host=args.host, port=args.port)
