@@ -27,11 +27,11 @@ morceaux :
   (le **vecteur latent**, note `z`). Imaginez que vous devez decrire un
   visage a quelqu'un en 64 mots-cles au lieu de montrer la photo : c'est ce
   que fait l'encodeur.
-- **Le decodeur** : prend ces 64 nombres et essaie de repeindre l'image
+- **Le decodeur** : prend ces nombres latents et essaie de repeindre l'image
   d'origine a partir d'eux seuls.
 
 Si l'encodeur et le decodeur font bien leur travail ensemble, alors ces 64
-nombres contiennent "l'essentiel" du visage (forme, couleur de peau,
+nombres latents contiennent "l'essentiel" du visage (forme, couleur de peau,
 coiffure, expression...). C'est ce couple encodeur/decodeur qu'on entraine.
 
 ### 2.2 Pourquoi "variationnel" ? Le petit truc qui change tout
@@ -137,41 +137,45 @@ resumer toute cette information dans un vecteur de taille raisonnable.
 
 ```
 Image d'entree : 3 x 64 x 64  (3 canaux couleur, 64 pixels de large, 64 de haut)
-     |  Conv2d 3 -> 32 canaux, on divise la taille par 2
+     |  Conv2d 3 -> hidden_channels canaux, on divise la taille par 2
      v
-32 x 32 x 32
-     |  Conv2d 32 -> 64 canaux, on divise la taille par 2
+hidden_channels x 32 x 32
+     |  Conv2d hidden_channels -> 2*hidden_channels, on divise la taille par 2
      v
-64 x 16 x 16
-     |  Conv2d 64 -> 128 canaux, on divise la taille par 2
+2*hidden_channels x 16 x 16
+     |  Conv2d 2*hidden_channels -> 4*hidden_channels, on divise la taille par 2
      v
-128 x 8 x 8
-     |  Conv2d 128 -> 256 canaux, on divise la taille par 2
+4*hidden_channels x 8 x 8
+     |  Conv2d 4*hidden_channels -> 8*hidden_channels, on divise la taille par 2
      v
-256 x 4 x 4
+8*hidden_channels x 4 x 4
      |  on "aplatit" tout en une seule liste de nombres
      v
-4096 nombres (256 x 4 x 4)
+8*hidden_channels*4*4 nombres
      |  deux petites couches separees
      v
-mu (64 nombres)      logvar (64 nombres)
+mu (latent_dim nombres)      logvar (latent_dim nombres)
 ```
 
-**Pourquoi les canaux doublent a chaque etage (32, 64, 128, 256) ?**
+Dans le baseline historique, `hidden_channels=32`, donc on obtient bien
+32, 64, 128, 256 canaux et 4096 nombres apres aplatissement. Dans la
+configuration amelioree, `hidden_channels=64`, donc le reseau a deux fois
+plus de canaux a chaque etage.
+
+**Pourquoi les canaux doublent a chaque etage ?**
 Convention tres courante en vision par ordinateur : a chaque fois qu'on
 divise la taille spatiale de l'image par 2 (on perd du detail geometrique),
 on double le nombre de "filtres" (canaux) pour compenser en gardant la
 capacite du reseau a representer des motifs varies (couleur, texture, etc).
 
-**Pourquoi `latent_dim = 64` (64 nombres pour resumer un visage) ?** Chez
-Sylvain, MNIST utilise 16 nombres. Un visage porte beaucoup plus
-d'information qu'un chiffre (identite, pose, expression, style de cheveux,
-eclairage...), on lui donne donc plus de "place" pour se resumer. 64 est un
-choix raisonnable et courant dans la litterature pour des visages a cette
-resolution, pas une valeur magique : plus grand donnerait probablement une
-meilleure reconstruction mais un espace latent plus dur a regulariser
-(rappel section 2.3) ; plus petit forcerait une compression plus agressive
-et donc plus de perte de detail.
+**Pourquoi passer de `latent_dim = 64` a `latent_dim = 128` ?** Chez
+Sylvain, MNIST utilise 16 nombres. Le baseline CelebA utilisait 64 nombres,
+deja plus adapte a un visage qu'a un chiffre. Pour ameliorer le modele, on
+donne maintenant 128 nombres au latent : plus de place pour representer
+l'identite, la pose, l'expression, les cheveux et l'eclairage. Le risque est
+un latent plus difficile a regulariser ; c'est pour ca qu'on combine ce
+changement avec `beta`, le KL annealing et l'arret anticipe, au lieu
+d'augmenter la capacite sans garde-fou.
 
 **Chaque bloc de convolution contient aussi :**
 - `BatchNorm2d` : normalise les valeurs a l'interieur du reseau pendant
@@ -186,9 +190,10 @@ et donc plus de perte de detail.
 ### 4.2 Le decodeur : l'inverse exact
 
 Le decodeur fait le chemin inverse avec des `ConvTranspose2d` (l'operation
-inverse d'une convolution qui reduit la taille : celle-ci l'augmente) :
-`4096 -> 4x4x256 -> 8x8x128 -> 16x16x64 -> 32x32x32 -> 64x64x3`, jusqu'a
-retrouver une image de la meme taille que celle de depart.
+inverse d'une convolution qui reduit la taille : celle-ci l'augmente). Pour
+le baseline, cela donne `4096 -> 4x4x256 -> 8x8x128 -> 16x16x64 ->
+32x32x32 -> 64x64x3`. Pour la configuration amelioree, le meme miroir est
+plus large parce que `hidden_channels=64`.
 
 **Detail important, corrige par rapport a l'implementation MNIST de
 l'equipe :** la toute derniere etape du decodeur n'a NI `BatchNorm` ni
@@ -203,10 +208,12 @@ toute la plage `[-1, 1]`.
 ### 4.3 Et le CVAE, concretement, qu'est-ce qui change ?
 
 Le CVAE a exactement la meme structure convolutive. La seule difference :
-apres avoir aplati l'image en 4096 nombres, on **colle** (concatene) le
-vecteur de condition (3 nombres, un par attribut) a la suite, ce qui donne
-4099 nombres au lieu de 4096, avant de calculer `mu` et `logvar`. Meme chose
-cote decodeur : on colle la condition a `z` avant de le redeployer en image.
+apres avoir aplati l'image, on **colle** (concatene) le vecteur de condition
+(3 nombres, un par attribut) a la suite, avant de calculer `mu` et `logvar`.
+Dans le baseline cela faisait 4099 nombres au lieu de 4096 ; dans la
+configuration amelioree le nombre de caracteristiques est plus grand, mais
+le principe est identique. Meme chose cote decodeur : on colle la condition
+a `z` avant de le redeployer en image.
 
 **Pourquoi coller la condition apres l'aplatissement, et pas au tout debut
 comme chez Sylvain (qui ajoute des "canaux" supplementaires directement sur
@@ -259,10 +266,11 @@ principaux et l'ablation :**
 | VAE et CVAE principaux | 8 000 | 1 500 | 1 500 |
 | Etude d'ablation (chaque valeur de beta) | 4 000 | 1 000 | 1 000 |
 
-L'ablation entraine 3 modeles complets (un par valeur de beta), donc pour
-rester dans un temps de calcul raisonnable sur CPU, elle utilise un
-echantillon d'entrainement plus petit. Le jeu de validation/test reste assez
-grand (1 000 images) pour donner une mesure fiable malgre tout.
+L'ablation entraine un modele complet par valeur de beta. Comme la grille
+amelioree contient davantage de valeurs que le baseline, elle utilise un
+echantillon d'entrainement plus petit et un arret anticipe. Le jeu de
+validation/test reste assez grand (1 000 images) pour donner une mesure
+fiable malgre tout.
 
 ### 5.3 Le choix des 3 attributs de conditionnement
 
@@ -309,17 +317,22 @@ attributs candidats avant de choisir**, plutot que de deviner :
 | Optimiseur | Adam | Algorithme standard pour entrainer des reseaux de neurones, ajuste automatiquement la vitesse d'apprentissage pour chaque parametre du reseau. Choix par defaut tres repandu, pas de raison specifique de s'en ecarter ici. |
 | `lr` (taux d'apprentissage) | 0.001 | Controle la taille des pas que le reseau fait a chaque mise a jour de ses poids. Valeur par defaut classique pour Adam, ni trop grande (risque d'instabilite) ni trop petite (apprentissage trop lent). |
 | `batch_size` (taille de lot) | 64 | Nombre d'images regardees en meme temps avant chaque mise a jour du reseau. 64 est un compromis courant entre vitesse (plus grand = moins de mises a jour) et memoire disponible (plus grand = plus de memoire necessaire), adapte a un entrainement CPU. |
-| `epochs` (modeles principaux) | 18 | Un "epoch" = un passage complet sur toutes les images d'entrainement. 18 a ete choisi en observant que la perte de validation continue de baisser jusque-la sans signe evident de sur-apprentissage (voir `results/experiments/*/training_log.csv`). |
-| `epochs` (ablation) | 10 | Reduit par rapport aux modeles principaux pour que les 3 entrainements de l'etude d'ablation restent faisables en temps raisonnable sur CPU. |
-| `beta` (modeles principaux) | 1.0 | Valeur retenue apres l'etude d'ablation (section 7) comme meilleur compromis. |
+| `epochs` (modeles principaux) | 80 max | Un "epoch" = un passage complet sur toutes les images d'entrainement. On autorise maintenant un budget plus long que le baseline de 18 epochs, mais ce budget est controle par l'arret anticipe. |
+| Arret anticipe | patience 5, `min_delta=1.0` | Si la loss de validation ne bat pas le meilleur score d'au moins 1.0 pendant 5 epochs consecutives, on arrete. Cela evite de continuer a entrainer quand le modele stagne ou commence a sur-apprendre. |
+| Checkpoints | `best_checkpoint.pth` et `last_checkpoint.pth` | Le meilleur checkpoint sert a l'evaluation/deploiement ; le dernier checkpoint permet de reprendre ou diagnostiquer la fin du run. |
+| `epochs` (ablation fine) | 40 max | L'ablation teste plus de valeurs de beta, donc chaque run garde un budget raisonnable, lui aussi controle par arret anticipe. |
+| `beta` (modeles ameliores) | 0.5 candidat | Le baseline a montre que `beta=5.0` degrade trop la reconstruction et que la zone utile est plutot entre 0.1 et 1.0. `0.5` est donc un candidat a verifier avec l'ablation fine. |
+| KL annealing | 0.0 -> 0.5 sur 10 epochs | Au debut, on laisse le modele apprendre a reconstruire ; ensuite, on augmente progressivement la regularisation KL pour organiser l'espace latent. |
 
 ---
 
 ## 7. L'etude d'ablation sur beta : ce qu'elle montre et pourquoi c'est demande
 
 "Ablation" = on fait varier un seul reglage (ici, `beta`) en gardant tout le
-reste identique (meme seed, meme architecture, meme nombre d'epochs, meme
-sous-echantillon), pour isoler precisement l'effet de ce reglage.
+reste identique (meme seed, meme architecture, meme sous-echantillon), pour
+isoler precisement l'effet de ce reglage.
+
+La premiere ablation, deja executee, testait trois valeurs :
 
 | beta | reconstruction (validation) | KL (validation) |
 |---|---|---|
@@ -336,8 +349,20 @@ confirme exactement ce compromis :
 - Avec un `beta` grand (5.0), c'est l'inverse : l'espace latent est tres
   discipline (KL la plus basse) mais la reconstruction en souffre nettement
   (821, contre 605 pour beta=0.1, soit environ 36 % de perte de qualite).
-- `beta = 1.0` est le compromis retenu pour les modeles principaux : ni
+- `beta = 1.0` etait le compromis retenu pour les modeles baseline : ni
   l'un ni l'autre effet n'est extreme.
+
+**Ce qu'on ameliore maintenant.** Ce tableau est utile mais trop grossier :
+il ne dit pas si `0.25`, `0.5` ou `0.75` serait meilleur que `1.0`. La
+nouvelle configuration d'ablation teste donc :
+
+```
+[0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
+```
+
+Chaque run peut aller jusqu'a 40 epochs, mais s'arrete si la validation ne
+s'ameliore plus pendant 5 epochs. La comparaison se fait sur la meilleure
+validation atteinte par chaque beta, pas seulement sur la derniere epoch.
 
 ---
 
@@ -360,9 +385,10 @@ confirme exactement ce compromis :
 ### 8.2 Espace latent en 2D (t-SNE)
 
 `latent_tsne_vae.png` et `latent_tsne_cvae.png` : le t-SNE est une methode
-qui prend les 64 nombres du vecteur latent de chaque image et les projette
-sur seulement 2 axes, pour pouvoir les dessiner sur un graphique. Chaque
-point colore represente une image du jeu de test.
+qui prend le vecteur latent de chaque image (64 dimensions dans le baseline,
+128 dans la configuration amelioree) et le projette sur seulement 2 axes,
+pour pouvoir le dessiner sur un graphique. Chaque point colore represente
+une image du jeu de test.
 
 **Une difference notable avec MNIST, a bien comprendre.** Chez Sylvain, les
 points du VAE MNIST se regroupent nettement par chiffre sur ce genre de

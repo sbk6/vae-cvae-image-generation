@@ -12,7 +12,10 @@ dataset:
   n_val: 1000
   n_test: 1000
 ablation:
-  betas: [0.1, 1.0, 5.0]
+  # Grille plus fine autour de la zone utile observee dans le baseline :
+  # beta=5 degrade trop la reconstruction, beta=0.1 reconstruit bien mais
+  # regularise peu. On explore donc surtout [0.1, 1.0].
+  betas: [0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
 model:
   type: vae
   latent_dim: 64
@@ -20,7 +23,11 @@ model:
 training:
   seed: 42
   batch_size: 64
-  epochs: 10
+  epochs: 40
   lr: 0.001
+  early_stopping:
+    enabled: true
+    patience: 5
+    min_delta: 1.0
   device: auto
-  output_dir: results/experiments/ablation
+  output_dir: results/experiments/ablation_beta_fine

@@ -12,7 +12,7 @@ choisies par leur index dans le test set plutot que par une classe.
 
 Usage (depuis projects/blaise_celeba/) :
     python -m evaluation.interpolation --config configs/celeba_vae.yaml \\
-        --checkpoint results/experiments/vae_main/best_checkpoint.pth \\
+        --checkpoint results/experiments/vae_improved/best_checkpoint.pth \\
         --output results/figures/interpolation_vae_0_to_1.png \\
         --index-a 0 --index-b 1
 """

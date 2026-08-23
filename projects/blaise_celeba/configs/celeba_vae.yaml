@@ -12,13 +12,28 @@ dataset:
   n_test: 1500
 model:
   type: vae
-  latent_dim: 64
-  hidden_channels: 32
+  # Configuration amelioree : plus de capacite pour des visages couleur que
+  # le baseline historique latent_dim=64 / hidden_channels=32.
+  latent_dim: 128
+  hidden_channels: 64
 training:
   seed: 42
   batch_size: 64
-  epochs: 18
+  # Budget haut, controle par early stopping : l'entrainement peut aller loin
+  # si la validation continue de progresser, mais s'arrete quand il stagne.
+  epochs: 80
   lr: 0.001
-  beta: 1.0
+  # Candidat a tester apres l'ablation fine : moins fort que 1.0 pour limiter
+  # le flou MSE/KL, tout en gardant un espace latent regularise.
+  beta: 0.5
+  early_stopping:
+    enabled: true
+    patience: 5
+    min_delta: 1.0
+  kl_annealing:
+    enabled: true
+    start_beta: 0.0
+    final_beta: 0.5
+    warmup_epochs: 10
   device: auto
-  output_dir: results/experiments/vae_main
+  output_dir: results/experiments/vae_improved

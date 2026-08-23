@@ -19,7 +19,7 @@ Le travail realise comprend :
 - une strategie de chargement de CelebA qui evite le probleme recurrent de
   quota Google Drive de `torchvision.datasets.CelebA` ;
 - l'entrainement des deux modeles sur un sous-echantillon reproductible ;
-- une etude d'ablation sur le poids beta (3 valeurs) ;
+- une etude d'ablation sur le poids beta, d'abord baseline puis grille fine ;
 - une evaluation quantitative (reconstruction, KL, controlabilite du CVAE) ;
 - la visualisation de l'espace latent (t-SNE) et l'interpolation ;
 - l'integration a la demo web partagee de l'equipe (`backend/`, `frontend/`).
@@ -63,10 +63,11 @@ Tailles utilisees :
 | Etude d'ablation (par valeur de beta) | 4 000 | 1 000 | 1 000 |
 
 La difference entre les deux tailles suit le meme choix que Sylvain sur
-MNIST : l'ablation entraine 3 modeles complets, il faut rester dans un budget
-de calcul raisonnable sur CPU (pas de GPU disponible sur cette machine). Le
-val/test de l'ablation reste assez grand (1 000 images) pour donner une
-mesure fiable malgre le sous-echantillonnage du train.
+MNIST : l'ablation entraine un modele complet par valeur de beta, il faut
+donc rester dans un budget de calcul raisonnable sur CPU (pas de GPU
+disponible sur cette machine). Le val/test de l'ablation reste assez grand
+(1 000 images) pour donner une mesure fiable malgre le sous-echantillonnage
+du train.
 
 Chaque sous-echantillon (images redimensionnees en 64x64, attributs extraits)
 est mis en cache localement apres le premier chargement
@@ -118,17 +119,17 @@ dans le reste du depot) :
 
 ```
 Image 3 x 64 x 64
-    | Conv 3->32, stride 2      (ConvBlock: Conv2d + BatchNorm2d + LeakyReLU)
-    v 32 x 32 x 32
-    | Conv 32->64, stride 2
-    v 64 x 16 x 16
-    | Conv 64->128, stride 2
-    v 128 x 8 x 8
-    | Conv 128->256, stride 2
-    v 256 x 4 x 4
-    | Flatten -> 4096
+    | Conv 3->hidden_channels, stride 2
+    v hidden_channels x 32 x 32
+    | Conv hidden_channels->2*hidden_channels, stride 2
+    v 2*hidden_channels x 16 x 16
+    | Conv 2*hidden_channels->4*hidden_channels, stride 2
+    v 4*hidden_channels x 8 x 8
+    | Conv 4*hidden_channels->8*hidden_channels, stride 2
+    v 8*hidden_channels x 4 x 4
+    | Flatten -> 8*hidden_channels*4*4
     v
-    fc_mu, fc_logvar -> latent_dim (64)
+    fc_mu, fc_logvar -> latent_dim
 ```
 
 Le decodeur est le miroir exact (ConvTranspose2d), termine par `Tanh` (sortie
@@ -140,9 +141,12 @@ chiffre 28x28 en niveaux de gris (texture de peau, couleur des cheveux,
 arriere-plan, eclairage). Avec seulement 2 etages, la carte de
 caracteristiques avant l'aplatissement resterait a 16x16, et le reseau
 n'aurait pas assez de profondeur pour apprendre des motifs visuels aussi
-varies. Consequence directe et assumee : ce modele a environ 2,2 millions de
-parametres, contre environ 257 000 pour le VAE MNIST de Sylvain (2 etages,
-images plus petites, un seul canal).
+varies. Le baseline historique utilisait `hidden_channels=32` et
+`latent_dim=64`. La configuration amelioree utilise maintenant
+`hidden_channels=64` et `latent_dim=128`, pour donner plus de capacite au
+modele sur des visages couleur ; l'arret anticipe limite le risque de
+sur-apprentissage et evite de payer inutilement toutes les epochs si la
+validation stagne.
 
 **Pourquoi LeakyReLU plutot que ReLU dans l'encodeur ?** Avec un reseau plus
 profond (4 etages), le risque d'unites mortes (neurones qui cessent de
@@ -225,20 +229,25 @@ final malgre la difference de taille d'image.
 - Seed fixe : 42, pour le tirage du sous-echantillon comme pour
   l'initialisation et l'entrainement du modele.
 - Optimiseur Adam, taux d'apprentissage 0.001, taille de batch 64.
-- Modeles principaux : `latent_dim=64` (plus grand que les 16 utilises pour
-  les chiffres MNIST/Fashion-MNIST ; un visage a besoin de plus de capacite
-  latente qu'un chiffre manuscrit pour representer forme, pose, eclairage et
-  style sans perte excessive), 18 epochs, beta=1.0.
+- Modeles principaux ameliores : `latent_dim=128`, `hidden_channels=64`,
+  budget maximal de 80 epochs, mais avec arret anticipe (`patience=5`,
+  `min_delta=1.0`). Le checkpoint `best_checkpoint.pth` garde la meilleure
+  validation, et `last_checkpoint.pth` garde le dernier etat atteint.
+- `beta=0.5` avec KL annealing lineaire de 0.0 a 0.5 sur les 10 premieres
+  epochs. L'objectif est de laisser le decodeur apprendre a reconstruire
+  avant de regulariser fortement l'espace latent, puis de rester sous
+  `beta=1.0` pour reduire le flou observe dans le baseline.
 - Pas de GPU disponible : tous les entrainements tournent sur CPU.
 
 ---
 
 ## 4. Etude d'ablation sur beta (livrable demande par l'enonce)
 
-Protocole : meme VAE (`latent_dim=64`, `hidden_channels=32`), meme seed, 10
-epochs, sur le sous-echantillon d'ablation (4 000 train / 1 000 val / 1 000
-test). Memes 3 valeurs que Sylvain sur MNIST (0.1, 1.0, 5.0), pour permettre
-une comparaison directe entre les deux datasets dans le rapport final.
+Protocole baseline deja execute : meme VAE (`latent_dim=64`,
+`hidden_channels=32`), meme seed, 10 epochs, sur le sous-echantillon
+d'ablation (4 000 train / 1 000 val / 1 000 test). Memes 3 valeurs que
+Sylvain sur MNIST (0.1, 1.0, 5.0), pour permettre une comparaison directe
+entre les deux datasets dans le rapport final.
 
 | beta | reconstruction (val) | KL (val) | loss totale (val) |
 |---|---|---|---|
@@ -255,10 +264,16 @@ Sylvain a beta=5.0 sur MNIST) : a beta=5.0 la KL reste a 56.86, un ordre de
 grandeur au-dessus de zero. Interpretation : CelebA porte davantage
 d'information par image que MNIST (texture, couleur, pose), donc meme
 fortement penalise, l'espace latent garde une utilite minimale pour la
-reconstruction. **Meilleur compromis retenu : beta=1.0**, utilise pour les
-modeles principaux (section 5), pour la meme raison que sur MNIST : la KL
-reste substantielle (donc un espace latent exploitable pour la generation)
-sans faire s'effondrer le signal.
+reconstruction. Ce premier resultat montre surtout que la zone interessante
+est entre `0.1` et `1.0`, car `5.0` degrade trop la reconstruction.
+
+La configuration actuelle lance donc une ablation plus fine :
+`[0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]`, avec un budget de 40 epochs
+et un arret anticipe de patience 5. Les scripts comparent maintenant la
+meilleure validation atteinte par chaque run, pas simplement la derniere
+epoch, ce qui est plus juste quand les runs peuvent s'arreter a des moments
+differents. Le candidat par defaut pour les modeles ameliores est `beta=0.5`
+avec KL annealing ; il devra etre confirme par cette ablation fine.
 
 Tableau genere automatiquement : `results/RESULTATS.md`. Courbe : `results/figures/ablation_beta_curve.png`.
 
@@ -328,8 +343,9 @@ bien structure, consequence directe de la regularisation par le terme KL
 
 ### 5.4 Comparaison quantitative VAE vs CVAE
 
-Mesure sur les 1 500 images du test set CelebA, modeles principaux
-(`vae_main`, `cvae_main`, beta=1.0, 18 epochs) :
+Mesure baseline sur les 1 500 images du test set CelebA, modeles historiques
+(`vae_main`, `cvae_main`, `latent_dim=64`, `hidden_channels=32`, beta=1.0,
+18 epochs) :
 
 | Modele | Reconstruction (test) | KL (test) |
 |---|---|---|
@@ -377,16 +393,20 @@ Inception pre-entraine disponible hors ligne, CPU uniquement.
 
 ### 5.5 Integration a la demo web partagee
 
-Les 5 checkpoints (`vae_main`, `cvae_main`, `beta_0.1`, `beta_1.0`, `beta_5.0`)
-sont decouverts automatiquement par `backend/catalog.py` et servis par
-`backend/adapters/blaise_celeba.py`, selon le meme mecanisme que MNIST et
-Fashion-MNIST (voir `docs/DEMO_WEB.md`). Verifie de bout en bout sans
-modifier le frontend (deja pilote par les donnees du catalogue) :
+Les checkpoints historiques (`vae_main`, `cvae_main`, `beta_0.1`,
+`beta_1.0`, `beta_5.0`) sont decouverts automatiquement par
+`backend/catalog.py` et servis par `backend/adapters/blaise_celeba.py`, selon
+le meme mecanisme que MNIST et Fashion-MNIST (voir `docs/DEMO_WEB.md`). Les
+nouveaux runs (`vae_improved`, `cvae_improved`, ablation fine) suivront le
+meme format de checkpoint, donc ils seront deployables de la meme facon une
+fois entraines. Verifie de bout en bout sans modifier le frontend (deja
+pilote par les donnees du catalogue) :
 
 - `GET /api/datasets` liste bien `celeba` aux cotes de `mnist`, avec les 8
   noms de classes lisibles (une combinaison d'attributs par classe) ;
-- `POST /api/sample` sur `celeba/cvae_main` avec `class_label=6` ("souriant,
-  homme") renvoie une image PNG coherente avec la condition demandee ;
+- `POST /api/sample` sur `celeba/cvae_main` avec `class_label=6` (`Smiling=1`,
+  `Male=1`, `Wavy_Hair=0`) renvoie une image PNG
+  coherente avec la condition demandee ;
 - le chemin reconstruction (`prepare_input` -> `encode` -> `decode` ->
   `to_display_range`) fonctionne avec le fixture RGB
   `backend/assets/celeba_samples.npz`, genere par
@@ -404,8 +424,9 @@ modifier le frontend (deja pilote par les donnees du catalogue) :
 - 3 attributs de conditionnement sur les 40 disponibles, choisis pour rester
   exploitables avec un sous-echantillon (section 1.3) : pas une couverture
   complete des attributs CelebA.
-- Pas de GPU disponible : epochs et taille d'echantillon dimensionnes pour
-  rester dans un budget de calcul raisonnable sur CPU.
+- Pas de GPU disponible : le protocole ameliore autorise 80 epochs, mais
+  l'arret anticipe (`patience=5`) evite de payer ce budget complet si la
+  validation stagne.
 - Controlabilite du CVAE mesuree par un proxy "plus proche centroide" par
   attribut (section 5.4), pas par un classifieur entraine : memes limites de
   principe que le proxy utilise par Sylvain sur MNIST (sensible au flou des
@@ -413,12 +434,18 @@ modifier le frontend (deja pilote par les donnees du catalogue) :
 
 ## 7. Prochaines etapes possibles
 
-- Entrainer plus longtemps / sur un sous-echantillon plus grand si une
-  machine avec GPU devient disponible.
+- Executer l'ablation beta fine pour confirmer ou remplacer le candidat
+  `beta=0.5`.
+- Entrainer les configurations ameliorees `vae_improved` et `cvae_improved`,
+  puis regenerer les figures et `comparison.json`.
+- Sur une machine avec GPU, augmenter le sous-echantillon (par exemple
+  20 000 ou 50 000 images d'entrainement) pour ameliorer la nettete.
 - Etendre le CVAE a davantage d'attributs, avec un sous-echantillon plus
   grand pour compenser la sparsite combinatoire.
 - Remplacer le proxy de controlabilite par un petit classifieur CNN
   multi-label entraine sur CelebA.
+- Brancher MLflow apres stabilisation du protocole, pour logger params,
+  metriques, checkpoints, figures et configs.
 
 ---
 
@@ -457,18 +484,18 @@ python -m evaluation.run_ablation --config configs/ablation_beta.yaml
 Regenerer les grilles qualitatives (a partir d'un modele deja entraine) :
 ```bash
 python -m evaluation.generate_grids --model vae --config configs/celeba_vae.yaml \
-    --checkpoint results/experiments/vae_main/best_checkpoint.pth
+    --checkpoint results/experiments/vae_improved/best_checkpoint.pth
 python -m evaluation.generate_grids --model cvae --config configs/celeba_cvae.yaml \
-    --checkpoint results/experiments/cvae_main/best_checkpoint.pth
+    --checkpoint results/experiments/cvae_improved/best_checkpoint.pth
 ```
 
 Regenerer la visualisation de l'espace latent et l'interpolation :
 ```bash
 python -m evaluation.latent_visualization --config configs/celeba_vae.yaml \
-    --checkpoint results/experiments/vae_main/best_checkpoint.pth \
+    --checkpoint results/experiments/vae_improved/best_checkpoint.pth \
     --output results/figures/latent_tsne_vae.png
 python -m evaluation.interpolation --config configs/celeba_vae.yaml \
-    --checkpoint results/experiments/vae_main/best_checkpoint.pth \
+    --checkpoint results/experiments/vae_improved/best_checkpoint.pth \
     --output results/figures/interpolation_vae_0_to_1.png
 ```
 

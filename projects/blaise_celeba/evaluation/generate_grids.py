@@ -7,11 +7,11 @@ Ne reentraine jamais le modele : charge un checkpoint deja entraine.
 Usage (depuis projects/blaise_celeba/) :
     python -m evaluation.generate_grids --model vae \\
         --config configs/celeba_vae.yaml \\
-        --checkpoint results/experiments/vae_main/best_checkpoint.pth
+        --checkpoint results/experiments/vae_improved/best_checkpoint.pth
 
     python -m evaluation.generate_grids --model cvae \\
         --config configs/celeba_cvae.yaml \\
-        --checkpoint results/experiments/cvae_main/best_checkpoint.pth
+        --checkpoint results/experiments/cvae_improved/best_checkpoint.pth
 """
 import argparse
 import itertools
