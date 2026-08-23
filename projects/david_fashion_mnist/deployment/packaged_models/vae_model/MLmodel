@@ -1,0 +1,36 @@
+artifact_path: file:///D:/vae-cvae-image-generation-equipe/projects/david_fashion_mnist/mlartifacts/models/m-f3c90b399a07408bb31011250835746b/artifacts
+flavors:
+  python_function:
+    artifacts:
+      checkpoint:
+        path: artifacts\vae_beta_1_seed42_final.pt
+        uri: D:\vae-cvae-image-generation-equipe\projects\david_fashion_mnist\checkpoints\vae_beta_1_seed42_final.pt
+    cloudpickle_version: 3.1.2
+    code: code
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pyfunc.model
+    python_model: python_model.pkl
+    python_version: 3.13.9
+    streamable: false
+is_signature_from_type_hint: false
+mlflow_version: 3.15.1
+model_id: m-f3c90b399a07408bb31011250835746b
+model_size_bytes: 27046646
+model_uuid: m-f3c90b399a07408bb31011250835746b
+prompts: null
+run_id: 77a13a292b2e4c5c8581f78dcd0dbc4c
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  serving_input_path: serving_input_example.json
+  type: dataframe
+signature:
+  inputs: '[{"type": "any", "name": "z", "required": false}]'
+  outputs: '[{"type": "string", "name": "image_base64", "required": true}, {"type":
+    "string", "name": "image_format", "required": true}, {"type": "long", "name":
+    "width", "required": true}, {"type": "long", "name": "height", "required": true}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2026-08-18 22:47:07.990842'
