@@ -16,7 +16,16 @@ async function request(path, options = {}) {
   }
 
   if (!response.ok) {
-    throw new Error(payload?.error || `Erreur HTTP ${response.status}`)
+    // FastAPI normalise ses erreurs sur "detail" : une chaine pour les erreurs
+    // metier levees par les routes, une liste structuree quand la validation
+    // Pydantic rejette le corps de la requete (HTTP 422).
+    const detail = payload?.detail
+    if (Array.isArray(detail)) {
+      const first = detail[0]
+      const field = first?.loc?.slice(1).join('.') || 'requête'
+      throw new Error(`${field} : ${first?.msg || 'valeur invalide'}`)
+    }
+    throw new Error(detail || payload?.error || `Erreur HTTP ${response.status}`)
   }
   return payload
 }

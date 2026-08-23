@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getFixtures, getMetrics, reconstructImage } from '../api.js'
-import { DigitImage, FixturePicker, Notice, formatNumber } from '../components.jsx'
+import { DataTable, DigitImage, FixturePicker, Notice, formatNumber } from '../components.jsx'
 
 export default function CompareView({ dataset, models }) {
   const [fixtures, setFixtures] = useState(null)
@@ -10,7 +10,7 @@ export default function CompareView({ dataset, models }) {
   const [error, setError] = useState(null)
 
   // Les identifiants different d'un dataset a l'autre (mnist/vae_main contre
-  // fashion/vae_beta_1) : on les resout par nature plutot qu'en dur.
+  // fashion/vae_beta_1_seed42_final) : on les resout par nature, pas en dur.
   const mainModels = models.filter((model) => model.family === 'main')
   const vaeModel = mainModels.find((model) => !model.conditional)
   const cvaeModel = mainModels.find((model) => model.conditional)
@@ -20,7 +20,7 @@ export default function CompareView({ dataset, models }) {
       .then((payload) => {
         setFixtures(payload.by_class)
         const keys = Object.keys(payload.by_class)
-        setIndex(payload.by_class[keys[5]]?.[0]?.index ?? 0)
+        setIndex(payload.by_class[keys[Math.min(5, keys.length - 1)]]?.[0]?.index ?? 0)
       })
       .catch((err) => setError(err.message))
     getMetrics(dataset.id).then(setMetrics).catch(() => setMetrics(null))
@@ -51,8 +51,8 @@ export default function CompareView({ dataset, models }) {
   return (
     <>
       <div className="card">
-        <h2>Reconstruction : VAE contre CVAE</h2>
-        <p className="subtitle">
+        <h2 className="mb-1 text-[17px] font-semibold">Reconstruction : VAE contre CVAE</h2>
+        <p className="mb-5 text-[13.5px] text-dim">
           La même image réelle est encodée puis décodée par les deux modèles. Le CVAE reçoit en plus
           le label, il n'a donc pas besoin d'encoder l'identité de la classe dans z et peut consacrer
           sa capacité latente au style.
@@ -61,7 +61,7 @@ export default function CompareView({ dataset, models }) {
         {error && <Notice kind="error">{error}</Notice>}
 
         {fixtures && (
-          <div className="controls">
+          <div className="mb-5 flex flex-wrap items-end gap-5">
             <FixturePicker
               fixtures={fixtures}
               classNames={dataset.class_names}
@@ -72,124 +72,97 @@ export default function CompareView({ dataset, models }) {
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 40, flexWrap: 'wrap', marginTop: 20 }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ width: 130 }}>
-              <DigitImage src={original} alt="Original" />
-            </div>
+        <div className="mt-5 flex flex-wrap gap-10">
+          <div className="w-32 text-center">
+            <DigitImage src={original} alt="Original" />
             <div className="caption">image réelle</div>
           </div>
           {vaeModel && (
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ width: 130 }}>
-                <DigitImage src={results.vae?.reconstruction} alt="Reconstruction VAE" />
-              </div>
+            <div className="w-32 text-center">
+              <DigitImage src={results.vae?.reconstruction} alt="Reconstruction VAE" />
               <div className="caption">{vaeModel.label}</div>
             </div>
           )}
           {cvaeModel && (
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ width: 130 }}>
-                <DigitImage src={results.cvae?.reconstruction} alt="Reconstruction CVAE" />
-              </div>
+            <div className="w-32 text-center">
+              <DigitImage src={results.cvae?.reconstruction} alt="Reconstruction CVAE" />
               <div className="caption">{cvaeModel.label}</div>
             </div>
           )}
         </div>
 
         {dataset.id === 'mnist' && (
-          <Notice kind="warn">
-            <strong>Le fond gris n'est pas un artefact d'affichage.</strong> Le dernier bloc du
-            décodeur applique un ReLU avant le Tanh (
-            <code className="mono">src/models/vae.py</code>), donc la sortie est bornée dans [0, 1)
-            alors que les données sont normalisées dans [-1, 1] : le modèle ne peut jamais produire
-            le noir. Les modèles Fashion-MNIST, qui se terminent par une Sigmoid, n'ont pas ce
-            problème — la comparaison entre les deux onglets le montre directement.
-          </Notice>
+          <div className="mt-5">
+            <Notice kind="warn">
+              <strong>Le fond gris n'est pas un artefact d'affichage.</strong> Le dernier bloc du
+              décodeur applique un ReLU avant le Tanh (
+              <code className="font-mono">src/models/vae.py</code>), donc la sortie est bornée dans
+              [0, 1) alors que les données sont normalisées dans [-1, 1] : le modèle ne peut jamais
+              produire le noir. Les modèles Fashion-MNIST, qui se terminent par une Sigmoid, n'ont
+              pas ce problème — basculer entre les datasets le montre directement.
+            </Notice>
+          </div>
         )}
       </div>
 
       {comparison && (
         <div className="card">
-          <h2>Métriques sur le test set complet</h2>
-          <p className="subtitle">
-            Issues de <code className="mono">reports/experiments/comparison.json</code>, produit par{' '}
-            <code className="mono">scripts/evaluate.py</code> sur 10 000 images.
+          <h2 className="mb-1 text-[17px] font-semibold">Métriques sur le test set complet</h2>
+          <p className="mb-5 text-[13.5px] text-dim">
+            Issues des fichiers de résultats produits par les scripts d'évaluation, sur 10 000
+            images.
           </p>
-          <div style={{ overflowX: 'auto' }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Modèle</th>
-                  <th style={{ textAlign: 'right' }}>Reconstruction</th>
-                  <th style={{ textAlign: 'right' }}>KL</th>
-                  <th style={{ textAlign: 'right' }}>Images</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>VAE</td>
-                  <td className="num">{formatNumber(comparison.vae?.reconstruction)}</td>
-                  <td className="num">{formatNumber(comparison.vae?.kl)}</td>
-                  <td className="num">{comparison.vae?.n_test}</td>
-                </tr>
-                <tr>
-                  <td>CVAE</td>
-                  <td className="num">{formatNumber(comparison.cvae?.reconstruction)}</td>
-                  <td className="num">{formatNumber(comparison.cvae?.kl)}</td>
-                  <td className="num">{comparison.cvae?.n_test}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <DataTable headers={['Modèle', 'Reconstruction', 'KL', 'Images']}>
+            <tr>
+              <td>VAE</td>
+              <td className="num">{formatNumber(comparison.vae?.reconstruction)}</td>
+              <td className="num">{formatNumber(comparison.vae?.kl)}</td>
+              <td className="num">{comparison.vae?.n_test}</td>
+            </tr>
+            <tr>
+              <td>CVAE</td>
+              <td className="num">{formatNumber(comparison.cvae?.reconstruction)}</td>
+              <td className="num">{formatNumber(comparison.cvae?.kl)}</td>
+              <td className="num">{comparison.cvae?.n_test}</td>
+            </tr>
+          </DataTable>
 
           {comparison.cvae?.controllability && (
-            <Notice kind="info">
-              Le score de contrôlabilité annoncé (
-              {formatNumber(comparison.cvae.controllability.overall_accuracy * 100, 1)} %) est mesuré
-              par un classifieur « plus proche centroïde » en espace pixel, qui s'effondre sur des
-              images floues. L'onglet Génération montre que le conditionnement fonctionne bien en
-              réalité — c'est la métrique qui est trop faible, pas le modèle.
-            </Notice>
+            <div className="mt-5">
+              <Notice kind="info">
+                Le score de contrôlabilité annoncé (
+                {formatNumber(comparison.cvae.controllability.overall_accuracy * 100, 1)} %) est
+                mesuré par un classifieur « plus proche centroïde » en espace pixel, qui s'effondre
+                sur des images floues. L'onglet Génération montre que le conditionnement fonctionne
+                bien en réalité — c'est la métrique qui est trop faible, pas le modèle.
+              </Notice>
+            </div>
           )}
         </div>
       )}
 
       {evaluation && (
         <div className="card">
-          <h2>Métriques sur le test set officiel</h2>
-          <p className="subtitle">
+          <h2 className="mb-1 text-[17px] font-semibold">Métriques sur le test set officiel</h2>
+          <p className="mb-5 text-[13.5px] text-dim">
             Issues de{' '}
-            <code className="mono">
+            <code className="font-mono">
               projects/david_fashion_mnist/results/evaluation_metrics.csv
             </code>{' '}
             — 10 000 images du test set officiel Fashion-MNIST.
           </p>
-          <div style={{ overflowX: 'auto' }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Modèle</th>
-                  <th style={{ textAlign: 'right' }}>β</th>
-                  <th style={{ textAlign: 'right' }}>Reconstruction</th>
-                  <th style={{ textAlign: 'right' }}>KL</th>
-                  <th style={{ textAlign: 'right' }}>Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {evaluation.map((row) => (
-                  <tr key={row.checkpoint}>
-                    <td>{row.model_type}</td>
-                    <td className="num">{row.beta}</td>
-                    <td className="num">{formatNumber(row.test_reconstruction)}</td>
-                    <td className="num">{formatNumber(row.test_kl)}</td>
-                    <td className="num">{formatNumber(row.test_total)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="subtitle" style={{ marginTop: 18 }}>
+          <DataTable headers={['Modèle', 'β', 'Reconstruction', 'KL', 'Total']}>
+            {evaluation.map((row) => (
+              <tr key={row.checkpoint}>
+                <td>{row.model_type}</td>
+                <td className="num">{row.beta}</td>
+                <td className="num">{formatNumber(row.test_reconstruction)}</td>
+                <td className="num">{formatNumber(row.test_kl)}</td>
+                <td className="num">{formatNumber(row.test_total)}</td>
+              </tr>
+            ))}
+          </DataTable>
+          <p className="mt-4 text-[13.5px] text-dim">
             À β égal, le CVAE obtient un KL plus faible que le VAE pour une reconstruction
             comparable : la classe lui étant fournie séparément, il a besoin de moins d'information
             dans z.

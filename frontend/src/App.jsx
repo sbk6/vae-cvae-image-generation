@@ -48,25 +48,31 @@ export default function App() {
   const dataset = datasets.find((item) => item.id === datasetId)
   const ActiveComponent = TABS.find((tab) => tab.id === activeTab)?.component
   const ready = !loading && !error && dataset && models.length > 0
+  const unregistered = models.filter((model) => model.registered === false)
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1>VAE / CVAE — démonstration interactive</h1>
-        <p>
+    <div className="mx-auto max-w-6xl px-6 pb-16">
+      <header className="mb-6 border-b border-line pt-8 pb-5">
+        <h1 className="mb-1.5 text-2xl font-bold tracking-tight">
+          VAE / CVAE — démonstration interactive
+        </h1>
+        <p className="m-0 text-sm text-dim">
           Génération d'images à partir des modèles entraînés par l'équipe. Chaque image est produite
-          en direct par le décodeur, pas rechargée depuis un PNG.
+          en direct par le décodeur, servi depuis le MLflow Model Registry.
         </p>
-        <div className="status-line">
-          <span>
-            <span className={`status-dot ${error ? 'down' : ''}`} />
+        <div className="mt-3 flex flex-wrap items-center gap-4 font-mono text-xs text-dim">
+          <span className="flex items-center gap-1.5">
+            <span
+              className={`inline-block size-2 rounded-full ${error ? 'bg-[#e5674f]' : 'bg-ok'}`}
+            />
             {error ? 'API injoignable' : loading ? 'Connexion…' : 'API en ligne'}
           </span>
           {health && (
             <>
               <span>torch {health.torch}</span>
-              <span>device: {health.device}</span>
-              <span>{health.models_available.length} modèles</span>
+              <span>device : {health.device}</span>
+              <span>inférence : {health.inference}</span>
+              <span>{health.registered_models?.length ?? 0} modèles au registre</span>
             </>
           )}
         </div>
@@ -76,32 +82,31 @@ export default function App() {
         <Notice kind="error">
           <strong>Impossible de joindre l'API.</strong> {error}
           <br />
-          Vérifier que le backend tourne : <code className="mono">make dev-api</code> (ou{' '}
-          <code className="mono">python -m backend.app</code>).
+          Vérifier que le backend tourne : <code className="font-mono">make dev-api</code>.
         </Notice>
       )}
 
       {datasets.length > 0 && (
-        <div className="dataset-bar">
+        <div className="mb-5">
           <DatasetSwitch datasets={datasets} value={datasetId} onChange={setDatasetId} />
-          {dataset && <p className="dataset-description">{dataset.description}</p>}
+          {dataset && <p className="mt-2.5 text-[12.5px] text-dim">{dataset.description}</p>}
         </div>
       )}
 
-      {datasets.length === 1 && (
+      {unregistered.length > 0 && (
         <Notice kind="warn">
-          Un seul dataset est disponible. Pour activer Fashion-MNIST, déposer les checkpoints de
-          David dans <code className="mono">projects/david_fashion_mnist/checkpoints/</code> — ils
-          sont détectés automatiquement au démarrage.
+          {unregistered.length} modèle(s) ont un checkpoint mais ne sont pas dans le Model Registry.
+          Les enregistrer avec{' '}
+          <code className="font-mono">python scripts/register_models.py</code>.
         </Notice>
       )}
 
-      <nav className="tabs">
+      <nav className="mb-7 flex flex-wrap gap-1">
         {TABS.map((tab) => (
           <button
             key={tab.id}
             type="button"
-            className={`tab ${activeTab === tab.id ? 'active' : ''}`}
+            className={`tab ${activeTab === tab.id ? 'tab-active' : ''}`}
             onClick={() => setActiveTab(tab.id)}
           >
             {tab.label}
@@ -119,9 +124,9 @@ export default function App() {
           models={models}
         />
       )}
-      {loading && <div className="card muted">Chargement des modèles…</div>}
+      {loading && <div className="card text-dim">Chargement des modèles…</div>}
       {!loading && !error && models.length === 0 && (
-        <div className="card muted">Aucun modèle disponible pour ce dataset.</div>
+        <div className="card text-dim">Aucun modèle disponible pour ce dataset.</div>
       )}
     </div>
   )

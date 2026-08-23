@@ -1,8 +1,14 @@
 // Petits composants partages par les differentes vues.
 
+const NOTICE_STYLES = {
+  error: 'notice-error',
+  info: 'notice-info',
+  warn: 'notice-warn',
+}
+
 export function Notice({ kind = 'info', children }) {
   if (!children) return null
-  return <div className={`notice ${kind}`}>{children}</div>
+  return <div className={`notice ${NOTICE_STYLES[kind] ?? NOTICE_STYLES.info}`}>{children}</div>
 }
 
 export function DigitImage({ src, alt, className = '' }) {
@@ -10,78 +16,94 @@ export function DigitImage({ src, alt, className = '' }) {
   return <img className={`digit ${className}`} src={src} alt={alt} />
 }
 
-// Les noms de classes viennent de l'API : chiffres "0".."9" pour MNIST,
-// libelles ("Basket", "Sac"...) pour Fashion-MNIST. Rien n'est code en dur.
-export function ClassSelector({ value, onChange, classNames = [], disabled = false }) {
-  // Des libelles courts tiennent dans les pastilles carrees ; au-dela on
-  // bascule sur une liste deroulante pour rester lisible.
-  const compact = classNames.every((name) => name.length <= 2)
+export function Field({ label, htmlFor, children, className = '' }) {
+  return (
+    <div className={`flex flex-col gap-1.5 ${className}`}>
+      <label className="field-label" htmlFor={htmlFor}>
+        {label}
+      </label>
+      {children}
+    </div>
+  )
+}
 
-  if (compact) {
-    return (
-      <div className="class-selector">
-        {classNames.map((name, index) => (
+// Les noms de classes viennent de l'API : chiffres "0".."9" pour MNIST,
+// libelles ("Basket", "Sac") pour Fashion-MNIST, combinaisons d'attributs
+// pour CelebA. Rien n'est code en dur ici.
+export function ClassSelector({ value, onChange, classNames = [], disabled = false }) {
+  // Des libelles courts tiennent dans des pastilles carrees ; au-dela on
+  // bascule sur des puces textuelles pour rester lisible.
+  const compact = classNames.length > 0 && classNames.every((name) => name.length <= 2)
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {classNames.map((name, index) => {
+        const active = value === index
+        const base = compact ? 'square-btn' : 'chip'
+        const activeClass = compact ? 'square-btn-active' : 'chip-active'
+        return (
           <button
             key={index}
             type="button"
             disabled={disabled}
-            className={`class-btn ${value === index ? 'active' : ''}`}
+            title={name}
+            className={`${base} ${active ? activeClass : ''}`}
             onClick={() => onChange(index)}
           >
             {name}
           </button>
-        ))}
-      </div>
-    )
-  }
-
-  return (
-    <div className="class-selector wide">
-      {classNames.map((name, index) => (
-        <button
-          key={index}
-          type="button"
-          disabled={disabled}
-          className={`class-chip ${value === index ? 'active' : ''}`}
-          onClick={() => onChange(index)}
-        >
-          {name}
-        </button>
-      ))}
+        )
+      })}
     </div>
   )
 }
 
 export function ModelSelect({ models, value, onChange, label = 'Modèle', id = 'model-select' }) {
   return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      <select id={id} value={value || ''} onChange={(event) => onChange(event.target.value)}>
+    <Field label={label} htmlFor={id}>
+      <select
+        id={id}
+        className="input-base"
+        value={value || ''}
+        onChange={(event) => onChange(event.target.value)}
+      >
         {models.map((model) => (
           <option key={model.id} value={model.id}>
             {model.label}
           </option>
         ))}
       </select>
-    </div>
+    </Field>
   )
 }
 
 export function DatasetSwitch({ datasets, value, onChange }) {
   return (
-    <div className="dataset-switch">
-      {datasets.map((dataset) => (
-        <button
-          key={dataset.id}
-          type="button"
-          className={`dataset-btn ${value === dataset.id ? 'active' : ''}`}
-          onClick={() => onChange(dataset.id)}
-          title={dataset.description}
-        >
-          {dataset.label}
-          <span className="dataset-count">{dataset.model_count}</span>
-        </button>
-      ))}
+    <div className="inline-flex gap-1 rounded-xl border border-line bg-surface p-1">
+      {datasets.map((dataset) => {
+        const active = value === dataset.id
+        return (
+          <button
+            key={dataset.id}
+            type="button"
+            title={dataset.description}
+            onClick={() => onChange(dataset.id)}
+            className={`flex cursor-pointer items-center gap-2 rounded-lg border-none px-4 py-2
+              font-semibold transition-colors ${
+                active ? 'bg-accent text-[#0b1020]' : 'bg-transparent text-dim hover:text-content'
+              }`}
+          >
+            {dataset.label}
+            <span
+              className={`rounded-full px-1.5 py-px font-mono text-[11px] ${
+                active ? 'bg-black/20' : 'bg-white/10'
+              }`}
+            >
+              {dataset.model_count}
+            </span>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -90,9 +112,8 @@ export function FixturePicker({ fixtures, classNames = [], value, onChange, labe
   // fixtures : { "0": [{index, image}], ... }
   const entries = Object.entries(fixtures || {})
   return (
-    <div className="field" style={{ flex: 1, minWidth: 260 }}>
-      <label>{label}</label>
-      <div className="digit-grid" style={{ gridTemplateColumns: 'repeat(10, 1fr)', gap: 4 }}>
+    <Field label={label} className="min-w-64 flex-1">
+      <div className="grid grid-cols-10 gap-1">
         {entries.map(([classLabel, items]) => {
           const item = items[0]
           if (!item) return null
@@ -104,13 +125,34 @@ export function FixturePicker({ fixtures, classNames = [], value, onChange, labe
               type="button"
               title={name}
               onClick={() => onChange(item.index)}
-              className={`fixture-btn ${selected ? 'active' : ''}`}
+              className={`cursor-pointer rounded-md border-2 bg-transparent p-0.5 transition-colors ${
+                selected ? 'border-accent' : 'border-transparent hover:border-accent-dim'
+              }`}
             >
               <img className="digit" src={item.image} alt={name} />
             </button>
           )
         })}
       </div>
+    </Field>
+  )
+}
+
+export function DataTable({ headers, children }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="data-table">
+        <thead>
+          <tr>
+            {headers.map((header, index) => (
+              <th key={header} className={index === 0 ? '' : 'text-right!'}>
+                {header}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
     </div>
   )
 }

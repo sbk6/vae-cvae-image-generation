@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { compareAblation, getMetrics } from '../api.js'
-import { ClassSelector, DigitImage, Notice, formatNumber } from '../components.jsx'
+import { ClassSelector, DataTable, DigitImage, Field, Notice, formatNumber } from '../components.jsx'
 
 export default function AblationView({ dataset }) {
   const [results, setResults] = useState([])
@@ -56,13 +56,13 @@ export default function AblationView({ dataset }) {
   return (
     <>
       <div className="card">
-        <h2>Effet de β, à vecteur latent identique</h2>
-        <p className="subtitle">
+        <h2 className="mb-1 text-[17px] font-semibold">Effet de β, à vecteur latent identique</h2>
+        <p className="mb-5 text-[13.5px] text-dim">
           Un seul z est tiré, puis décodé par tous les modèles de la série. À latent constant, tout
           écart visible vient uniquement de β.
         </p>
 
-        <div className="controls">
+        <div className="mb-5 flex flex-wrap items-end gap-5">
           <button
             className="btn"
             onClick={() => draw(series, conditional ? classLabel : undefined)}
@@ -72,10 +72,10 @@ export default function AblationView({ dataset }) {
           </button>
 
           {availableSeries.length > 1 && (
-            <div className="field">
-              <label htmlFor="series-select">Série</label>
+            <Field label="Série" htmlFor="series-select">
               <select
                 id="series-select"
+                className="input-base"
                 value={series || ''}
                 onChange={(event) => draw(event.target.value, classLabel)}
               >
@@ -85,13 +85,12 @@ export default function AblationView({ dataset }) {
                   </option>
                 ))}
               </select>
-            </div>
+            </Field>
           )}
         </div>
 
         {conditional && (
-          <div className="field" style={{ marginBottom: 20 }}>
-            <label>Classe conditionnée</label>
+          <Field label="Classe conditionnée" className="mb-5">
             <ClassSelector
               value={classLabel}
               onChange={(value) => {
@@ -101,7 +100,7 @@ export default function AblationView({ dataset }) {
               classNames={dataset.class_names}
               disabled={loading}
             />
-          </div>
+          </Field>
         )}
 
         {error && <Notice kind="error">{error}</Notice>}
@@ -109,113 +108,78 @@ export default function AblationView({ dataset }) {
         {incomplete && (
           <Notice kind="warn">
             <strong>Série d'ablation incomplète pour ce dataset.</strong> Un seul β est disponible,
-            il en faut au moins deux pour que la comparaison ait un sens. Les checkpoints livrés se
-            limitent à β = 1, sélectionnés pour l'application web ; les runs β = 0.1 et β = 4
-            existent côté entraînement mais n'ont pas été transmis.
-            <br />
-            <br />
-            Pour activer cet écran, déposer <code className="mono">vae_beta_01*.pt</code>,{' '}
-            <code className="mono">vae_beta_4*.pt</code> (et leurs équivalents CVAE) dans{' '}
-            <code className="mono">projects/david_fashion_mnist/checkpoints/</code>. Ils seront
-            détectés automatiquement. Les chiffres correspondants restent consultables dans le
-            tableau ci-dessous.
+            il en faut au moins deux pour que la comparaison ait un sens. Déposer les checkpoints des
+            autres valeurs de β puis relancer{' '}
+            <code className="font-mono">python scripts/register_models.py</code> suffira à activer
+            cet écran. Les chiffres correspondants restent consultables ci-dessous.
           </Notice>
         )}
 
-        <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+        <div className="flex flex-wrap gap-8">
           {results.map((result) => (
-            <div key={result.model_id} style={{ textAlign: 'center', flex: '0 0 160px' }}>
+            <div key={result.model_id} className="w-40 text-center">
               <DigitImage src={result.image} alt={result.label} />
-              <div className="caption" style={{ fontWeight: 600, color: 'var(--text)' }}>
-                {result.label}
-              </div>
+              <div className="mt-1.5 text-center text-xs font-semibold">{result.label}</div>
             </div>
           ))}
         </div>
 
         {results.length > 0 && dataset.id === 'mnist' && (
-          <Notice kind="info">
-            <strong>β = 5.0 produit une tache informe, et c'est le résultat attendu.</strong> Le
-            terme KL domine la loss, le modèle ferme son espace latent (KL ≈ 0.56) et le décodeur
-            produit à peu près la même image quel que soit z : c'est l'effondrement du postérieur.
-            β = 0.1 reconstruit plus finement mais régularise mal ; β = 1.0 est le compromis retenu.
-          </Notice>
-        )}
-        {results.length > 0 && dataset.id === 'fashion_mnist' && (
-          <Notice kind="info">
-            L'effondrement est plus progressif ici : le KL passe de 41 à 6.8 entre β = 0.1 et β = 4
-            (contre 39 → 0.56 sur MNIST). Fashion-MNIST étant plus texturé, le modèle a davantage
-            intérêt à conserver de l'information dans z même sous forte pénalité.
-          </Notice>
+          <div className="mt-5">
+            <Notice kind="info">
+              <strong>β = 5.0 produit une tache informe, et c'est le résultat attendu.</strong> Le
+              terme KL domine la loss, le modèle ferme son espace latent (KL ≈ 0.56) et le décodeur
+              produit à peu près la même image quel que soit z : c'est l'effondrement du postérieur.
+              β = 0.1 reconstruit plus finement mais régularise mal ; β = 1.0 est le compromis
+              retenu.
+            </Notice>
+          </div>
         )}
       </div>
 
       {ablation && (
         <div className="card">
-          <h2>Résultats chiffrés de l'ablation</h2>
-          <p className="subtitle">
-            Issus de <code className="mono">reports/experiments/ablation/results.json</code> —
-            6 epochs par valeur de β, même seed, même architecture.
+          <h2 className="mb-1 text-[17px] font-semibold">Résultats chiffrés de l'ablation</h2>
+          <p className="mb-5 text-[13.5px] text-dim">
+            Même seed, même architecture, seul β change d'une ligne à l'autre.
           </p>
-          <div style={{ overflowX: 'auto' }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>β</th>
-                  <th style={{ textAlign: 'right' }}>Loss val.</th>
-                  <th style={{ textAlign: 'right' }}>Reconstruction</th>
-                  <th style={{ textAlign: 'right' }}>KL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ablation.map((row) => (
-                  <tr key={row.beta}>
-                    <td className="mono">{row.beta}</td>
-                    <td className="num">{formatNumber(row.final_val_loss)}</td>
-                    <td className="num">{formatNumber(row.final_val_reconstruction)}</td>
-                    <td className="num">{formatNumber(row.final_val_kl)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="subtitle" style={{ marginTop: 18 }}>
-            La colonne KL raconte toute l'histoire : 39.5 → 15.4 → 0.56. Plus β augmente, plus le
-            modèle paie cher l'utilisation de son espace latent, jusqu'à cesser de s'en servir.
+          <DataTable headers={['β', 'Loss val.', 'Reconstruction', 'KL']}>
+            {ablation.map((row) => (
+              <tr key={row.beta}>
+                <td className="font-mono">{row.beta}</td>
+                <td className="num">{formatNumber(row.final_val_loss)}</td>
+                <td className="num">{formatNumber(row.final_val_reconstruction)}</td>
+                <td className="num">{formatNumber(row.final_val_kl)}</td>
+              </tr>
+            ))}
+          </DataTable>
+          <p className="mt-4 text-[13.5px] text-dim">
+            La colonne KL raconte toute l'histoire : plus β augmente, plus le modèle paie cher
+            l'utilisation de son espace latent, jusqu'à cesser de s'en servir.
           </p>
         </div>
       )}
 
       {evaluation && (
         <div className="card">
-          <h2>Résultats chiffrés de l'ablation</h2>
-          <p className="subtitle">
+          <h2 className="mb-1 text-[17px] font-semibold">Résultats chiffrés de l'ablation</h2>
+          <p className="mb-5 text-[13.5px] text-dim">
             Issus de{' '}
-            <code className="mono">projects/david_fashion_mnist/results/evaluation_metrics.csv</code>{' '}
+            <code className="font-mono">
+              projects/david_fashion_mnist/results/evaluation_metrics.csv
+            </code>{' '}
             — test set officiel, 10 000 images.
           </p>
-          <div style={{ overflowX: 'auto' }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Modèle</th>
-                  <th style={{ textAlign: 'right' }}>β</th>
-                  <th style={{ textAlign: 'right' }}>Reconstruction</th>
-                  <th style={{ textAlign: 'right' }}>KL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {evaluation.map((row) => (
-                  <tr key={row.checkpoint}>
-                    <td>{row.model_type}</td>
-                    <td className="num">{row.beta}</td>
-                    <td className="num">{formatNumber(row.test_reconstruction)}</td>
-                    <td className="num">{formatNumber(row.test_kl)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable headers={['Modèle', 'β', 'Reconstruction', 'KL']}>
+            {evaluation.map((row) => (
+              <tr key={row.checkpoint}>
+                <td>{row.model_type}</td>
+                <td className="num">{row.beta}</td>
+                <td className="num">{formatNumber(row.test_reconstruction)}</td>
+                <td className="num">{formatNumber(row.test_kl)}</td>
+              </tr>
+            ))}
+          </DataTable>
         </div>
       )}
     </>

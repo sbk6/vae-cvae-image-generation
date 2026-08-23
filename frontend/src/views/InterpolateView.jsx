@@ -26,7 +26,7 @@ export default function InterpolateView({ dataset, models }) {
         // Deux classes eloignees par defaut, pour que la transition soit nette.
         const keys = Object.keys(payload.by_class)
         setSourceIndex(payload.by_class[keys[3]]?.[0]?.index ?? 0)
-        setTargetIndex(payload.by_class[keys[8]]?.[0]?.index ?? 1)
+        setTargetIndex(payload.by_class[keys[Math.min(8, keys.length - 1)]]?.[0]?.index ?? 1)
       })
       .catch((err) => setError(err.message))
   }, [dataset.id])
@@ -54,21 +54,21 @@ export default function InterpolateView({ dataset, models }) {
 
   return (
     <div className="card">
-      <h2>Interpolation dans l'espace latent</h2>
-      <p className="subtitle">
+      <h2 className="mb-1 text-[17px] font-semibold">Interpolation dans l'espace latent</h2>
+      <p className="mb-5 text-[13.5px] text-dim">
         On encode deux images réelles vers leurs vecteurs mu, on interpole linéairement entre les
         deux, puis on décode chaque point. Une transition progressive prouve que l'espace latent est
         continu — et pas un simple dictionnaire d'images mémorisées.
       </p>
 
-      <div className="controls">
+      <div className="mb-5 flex flex-wrap items-end gap-5">
         <ModelSelect models={usable} value={modelId} onChange={setModelId} />
       </div>
 
       {error && <Notice kind="error">{error}</Notice>}
 
       {fixtures && (
-        <div className="controls" style={{ alignItems: 'flex-start' }}>
+        <div className="mb-5 flex flex-wrap items-start gap-5">
           <FixturePicker
             fixtures={fixtures}
             classNames={classNames}
@@ -88,27 +88,32 @@ export default function InterpolateView({ dataset, models }) {
 
       {result && (
         <>
-          <div className="interp-main" style={{ margin: '28px 0' }}>
-            <div className="endpoint">
-              <DigitImage src={result.source.image} alt="Départ" />
+          <div className="my-7 flex flex-wrap items-center gap-7">
+            <div className="text-center">
+              <div className="w-24">
+                <DigitImage src={result.source.image} alt="Départ" />
+              </div>
               <div className="caption">départ — {nameOf(result.source.label)}</div>
             </div>
 
-            <div className="featured" style={{ flex: 1, maxWidth: 200 }}>
+            <div className="max-w-52 flex-1">
               <DigitImage src={currentImage} alt="Interpolation" />
               <div className="caption">
                 α = {currentAlpha?.toFixed(2)} — étape {position + 1} / {STEPS}
               </div>
             </div>
 
-            <div className="endpoint">
-              <DigitImage src={result.target.image} alt="Arrivée" />
+            <div className="text-center">
+              <div className="w-24">
+                <DigitImage src={result.target.image} alt="Arrivée" />
+              </div>
               <div className="caption">arrivée — {nameOf(result.target.label)}</div>
             </div>
           </div>
 
           <input
             type="range"
+            className="range-accent"
             min={0}
             max={STEPS - 1}
             value={position}
@@ -116,16 +121,18 @@ export default function InterpolateView({ dataset, models }) {
             disabled={loading}
           />
 
-          <div className="interp-strip" style={{ marginTop: 18 }}>
+          <div className="mt-4 flex gap-1.5 overflow-x-auto pb-2">
             {result.images.map((image, index) => (
-              <div
+              <button
                 key={index}
-                className={`digit-cell ${index === position ? 'current' : ''}`}
+                type="button"
                 onClick={() => setPosition(index)}
-                style={{ cursor: 'pointer' }}
+                className={`w-16 shrink-0 cursor-pointer rounded border-2 bg-transparent p-0 ${
+                  index === position ? 'border-accent' : 'border-transparent'
+                }`}
               >
                 <DigitImage src={image} alt={`α = ${result.alphas[index].toFixed(2)}`} />
-              </div>
+              </button>
             ))}
           </div>
         </>
