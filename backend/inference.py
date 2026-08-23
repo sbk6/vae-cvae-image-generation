@@ -59,8 +59,22 @@ def raw_to_png_b64(image_uint8: np.ndarray) -> str:
 
     Sert a afficher les vignettes d'images reelles : elles sont deja en
     uint8 [0, 255] et ne dependent d'aucune normalisation de modele.
+
+    Attention au format : `_array_to_png_b64` attend du (C, H, W) pour ses
+    images a 3 dimensions (la convention PyTorch, celle que produisent les
+    tenseurs de `tensor_to_png_b64`). Les fixtures couleur (CelebA) stockent
+    au contraire du (H, W, C), la convention numpy/PIL habituelle pour une
+    image chargee depuis un fichier. Sans cette transposition, une image RGB
+    (64, 64, 3) etait interpretee a tort comme un tableau (C, H, W), ce qui
+    faisait planter la conversion PNG (500 sur /api/reconstruct et
+    /api/interpolate des le premier appel avec une image couleur, jamais
+    remarque avant CelebA car MNIST/Fashion-MNIST sont en niveaux de gris,
+    (H, W) seulement, sans cette ambiguite).
     """
-    return _array_to_png_b64(np.asarray(image_uint8, dtype=np.uint8))
+    array = np.asarray(image_uint8, dtype=np.uint8)
+    if array.ndim == 3:
+        array = np.transpose(array, (2, 0, 1))
+    return _array_to_png_b64(array)
 
 
 def alphas_for(steps: int) -> List[float]:
