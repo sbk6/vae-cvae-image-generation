@@ -2,7 +2,7 @@
 
 Bonsoir Monsieur,
 
-Nous travaillons sur le sujet **VAE conditionnel pour la génération d'images**. Cette séance, nous avons repris le code existant, corrigé un bug important, puis **réellement entraîné** (et pas seulement testé en mode rapide) un VAE et un CVAE sur **MNIST**, mené une **étude d'ablation sur le poids β**, produit les **visualisations demandées** (espace latent, interpolation) et fait une **comparaison chiffrée** entre les deux modèles. Les deux autres datasets de l'énoncé (Fashion-MNIST, CelebA) ne sont pas encore commencés : voir la section "Prochaines étapes".
+Nous travaillons sur le sujet **VAE conditionnel pour la génération d'images**. Cette séance, nous avons repris le code existant, corrigé un bug important, puis **réellement entraîné** (et pas seulement testé en mode rapide) un VAE et un CVAE sur **MNIST**, mené une **étude d'ablation sur le poids β**, produit les **visualisations demandées** (espace latent, interpolation) et fait une **comparaison chiffrée** entre les deux modèles. Depuis, le travail des trois sous-projets (MNIST, Fashion-MNIST, CelebA) a été réuni sur `main`, et la démonstration web demandée par l'énoncé est livrée : voir la section « Démonstration web ».
 
 Ce document est écrit pour être lu tel quel en séance : chaque résultat renvoie vers le fichier exact où le voir, et est accompagné de son interprétation.
 
@@ -28,7 +28,7 @@ L'énoncé demande explicitement une **étude d'ablation sur β** (le poids du t
 - **Comparaison quantitative** VAE vs CVAE : perte de reconstruction, KL, et une mesure de "contrôlabilité" du CVAE (voir section 6.4 — résultat surprenant et instructif).
 - Réécriture des scripts pour qu'ils **chargent un modèle déjà entraîné** au lieu de le ré-entraîner à chaque fois qu'on veut une figure.
 
-Ce qui n'est **pas** fait : Fashion-MNIST et CelebA (le code a des points d'extension prévus mais pas implémentés), la démonstration web, le score FID.
+Ce qui n'était **pas** fait à cette date : Fashion-MNIST, CelebA, la démonstration web et le score FID. Les trois premiers points ont depuis été traités (voir « Démonstration web ») ; le FID reste à calculer.
 
 ## 3. Répartition des tâches dans le groupe de 4
 
@@ -85,7 +85,7 @@ docs/
   explanations.md, presentation_seance_1.md   comptes rendus de la séance précédente (dépassés
                                 sur les chiffres, gardés pour la partie pédagogique en français)
 
-tests/                        tests unitaires (8 tests, tous verts)
+tests/                        tests unitaires (49 tests avec ceux de l'API)
 ```
 
 ## 5. Comment le code fonctionne, en mots simples
@@ -267,7 +267,7 @@ Installer les dépendances :
 python -m pip install -r requirements.txt
 ```
 
-Lancer les tests (49 tests, doivent tous passer) :
+Lancer les tests (49 tests) :
 ```bash
 python -m pytest -q
 ```
@@ -306,21 +306,25 @@ python scripts/evaluate.py
 
 Lancer la démonstration web (voir section ci-dessous) :
 ```bash
-make install-demo && make fixtures && make demo
+make install-demo && make fixtures && make register && make demo
 ```
 
 ## Démonstration web
 
-La démonstration interactive demandée par l'énoncé est disponible : API Flask +
-interface React, servies sur un seul port, avec inférence en direct sur les
-checkpoints entraînés (~14 ms par image sur CPU).
+La démonstration interactive demandée par l'énoncé est disponible : API FastAPI
++ interface React/Tailwind, servies sur un seul port.
 
-Elle sert **les deux sous-projets dans une seule application** : MNIST (`src/`)
-et Fashion-MNIST (`projects/david_fashion_mnist/`), avec un sélecteur de
-dataset en en-tête. Les deux implémentations de VAE/CVAE sont incompatibles
-entre elles (normalisation, plage de sortie, conditionnement, signatures) ;
-elles sont réconciliées par une couche d'adaptateurs dans `backend/adapters/`,
-sans qu'aucune ligne de code ML ait été modifiée.
+Elle sert **les trois sous-projets dans une seule application** : MNIST
+(`src/`), Fashion-MNIST (`projects/david_fashion_mnist/`) et CelebA
+(`projects/blaise_celeba/`), avec un sélecteur de dataset en en-tête. Les trois
+implémentations de VAE/CVAE sont incompatibles entre elles (normalisation,
+plage de sortie, conditionnement, signatures, couleur) ; elles sont réconciliées
+par une couche d'adaptateurs dans `backend/adapters/`, sans qu'aucune ligne de
+code ML ait été modifiée.
+
+**Toute l'inférence passe par le MLflow Model Registry.** Aucune route de l'API
+n'instancie un modèle : chacune charge un `mlflow.pyfunc` versionné, empaqueté
+par `scripts/register_models.py`.
 
 Cinq écrans : génération conditionnée par classe, interpolation latente avec
 slider, exploration des dimensions de z au curseur, comparaison VAE/CVAE, et
@@ -330,16 +334,16 @@ Installation puis lancement :
 ```bash
 make install-demo
 make fixtures
+make register
 make demo
 ```
 
-Puis ouvrir http://localhost:8000. Une variante dockerisée est disponible via
-`make docker-demo`.
+Puis ouvrir http://localhost:8000. La documentation d'API est auto-générée sur
+http://localhost:8000/docs, et le registre s'inspecte avec `make mlflow-ui`.
 
-Les checkpoints Fashion-MNIST étant gitignorés, ils doivent être déposés dans
-`projects/david_fashion_mnist/checkpoints/` pour activer ce dataset ; ils sont
-détectés automatiquement. En leur absence, la démo fonctionne normalement sur
-MNIST seul.
+Les checkpoints Fashion-MNIST et CelebA n'étant pas versionnés, ils doivent être
+déposés dans leur sous-projet puis enregistrés avec `make register`. En leur
+absence, la démo fonctionne normalement sur les datasets disponibles.
 
 Architecture, référence de l'API et justification des choix techniques :
 [docs/DEMO_WEB.md](docs/DEMO_WEB.md).
