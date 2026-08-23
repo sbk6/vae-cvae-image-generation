@@ -38,11 +38,25 @@ install-demo:
 fixtures:
 	python scripts/build_demo_fixtures.py
 
+# --- MLflow : le Model Registry alimente toute l'inference de l'API ---
+
+# Empaquette les checkpoints disponibles et les enregistre. A relancer apres
+# tout ajout de checkpoint : l'API ne voit que ce qui est au registre.
+register:
+	python scripts/register_models.py
+
+register-list:
+	python scripts/register_models.py --list
+
+# Interface MLflow : experiences, parametres et Model Registry.
+mlflow-ui:
+	mlflow ui --backend-store-uri sqlite:///mlflow.db
+
 # --- Developpement : deux process, rechargement a chaud du frontend ---
 
 # Terminal 1
 dev-api:
-	python -m backend.app --port 8000 --debug
+	python -m backend.app --port 8000 --reload
 
 # Terminal 2 : Vite proxifie /api vers :8000
 dev-web:
@@ -50,7 +64,7 @@ dev-web:
 
 # --- Demonstration : un seul process, tout sur :8000 ---
 
-demo: fixtures
+demo: fixtures register
 	npm run build --prefix frontend
 	python -m backend.app --port 8000
 
@@ -72,5 +86,5 @@ docker-run-mounted:
 docker-demo: docker-build docker-run
 
 .PHONY: install train-vae train-cvae ablation evaluate test lint clean \
-        install-demo fixtures dev-api dev-web demo \
+        install-demo fixtures register register-list mlflow-ui dev-api dev-web demo \
         docker-build docker-run docker-run-mounted docker-demo

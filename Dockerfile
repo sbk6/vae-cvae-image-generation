@@ -59,7 +59,12 @@ COPY reports/experiments/ ./reports/experiments/
 # Build React produit a l'etape precedente
 COPY --from=frontend-build /build/dist ./frontend/dist
 
+# Le Model Registry est construit au build plutot qu'au demarrage : toute
+# l'inference passe par MLflow, un container sans registre ne servirait rien.
+# Les modeles sans checkpoint present sont simplement ignores.
+RUN python scripts/register_models.py ||     echo "Aucun modele enregistre au build : le container demarrera degrade."
+
 EXPOSE 8000
 
-# 0.0.0.0 pour etre joignable depuis l'hote ; waitress gere le multi-thread.
+# 0.0.0.0 pour etre joignable depuis l'hote.
 CMD ["python", "-m", "backend.app", "--host", "0.0.0.0", "--port", "8000", "--device", "cpu"]
