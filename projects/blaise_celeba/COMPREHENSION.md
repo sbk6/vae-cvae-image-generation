@@ -339,10 +339,10 @@ attributs candidats avant de choisir**, plutot que de deviner :
 | Optimiseur | Adam | Algorithme standard pour entrainer des reseaux de neurones, ajuste automatiquement la vitesse d'apprentissage pour chaque parametre du reseau. Choix par defaut tres repandu, pas de raison specifique de s'en ecarter ici. |
 | `lr` (taux d'apprentissage) | 0.001 | Controle la taille des pas que le reseau fait a chaque mise a jour de ses poids. Valeur par defaut classique pour Adam, ni trop grande (risque d'instabilite) ni trop petite (apprentissage trop lent). |
 | `batch_size` (taille de lot) | 64 | Nombre d'images regardees en meme temps avant chaque mise a jour du reseau. 64 est un compromis courant entre vitesse (plus grand = moins de mises a jour) et memoire disponible (plus grand = plus de memoire necessaire), adapte a un entrainement CPU. |
-| `epochs` (modeles principaux) | 10 | Un "epoch" = un passage complet sur toutes les images d'entrainement. Comme on passe de 8 000 a 32 000 images, 10 epochs donnent deja beaucoup plus de mises a jour utiles que le baseline. |
+| `epochs` (modeles principaux) | 100 max | Un "epoch" = un passage complet sur toutes les images d'entrainement. Comme on passe de 8 000 a 32 000 images, 100 epochs donnent un vrai budget long ; l'arret anticipe peut couper avant si la validation stagne. |
 | Arret anticipe | patience 10, `min_delta=1.0` | Si la loss de validation ne bat pas le meilleur score d'au moins 1.0 pendant 10 epochs consecutives, on arrete. Cela evite de continuer a entrainer quand le modele stagne ou commence a sur-apprendre. |
 | Checkpoints | `best_checkpoint.pth` et `last_checkpoint.pth` | Le meilleur checkpoint sert a l'evaluation/deploiement ; le dernier checkpoint permet de reprendre ou diagnostiquer la fin du run. |
-| `epochs` (ablation fine) | 10 | L'ablation teste plus de valeurs de beta, donc chaque run garde un budget raisonnable sur 8 000 images equilibrees. |
+| `epochs` (ablation fine) | 100 max | L'ablation teste plus de valeurs de beta sur 8 000 images equilibrees ; l'arret anticipe evite de payer les 100 epochs si un beta stagne. |
 | `beta` (modeles ameliores) | 0.5 candidat | Le baseline a montre que `beta=5.0` degrade trop la reconstruction et que la zone utile est plutot entre 0.1 et 1.0. `0.5` est donc un candidat a verifier avec l'ablation fine. |
 | KL annealing | 0.0 -> 0.5 sur 10 epochs | Au debut, on laisse le modele apprendre a reconstruire ; ensuite, on augmente progressivement la regularisation KL pour organiser l'espace latent. |
 
@@ -382,8 +382,9 @@ nouvelle configuration d'ablation teste donc :
 [0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
 ```
 
-Chaque run va jusqu'a 10 epochs. La comparaison se fait sur la meilleure
-validation atteinte par chaque beta, pas seulement sur la derniere epoch.
+Chaque run peut aller jusqu'a 100 epochs. La comparaison se fait sur la
+meilleure validation atteinte par chaque beta, pas seulement sur la derniere
+epoch.
 
 ---
 

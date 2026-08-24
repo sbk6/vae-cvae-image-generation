@@ -15,4 +15,4 @@ Protocole deja execute avant le dernier changement de configuration : VAE identi
 
 Lecture : quand beta augmente, la KL est davantage penalisee, donc elle baisse (latent plus proche de la loi normale, mieux regularise), mais la reconstruction se degrade (image reconstruite moins fidele). Un beta trop petit fait l'inverse : bonne reconstruction, mais latent peu structure, avec un risque de mauvaise generation quand on echantillonne un z aleatoire.
 
-La configuration actuelle d'ablation utilise maintenant 10 epochs et 8 000 images equilibrees par combinaison d'attributs. Ce fichier sera regenere quand `python -m evaluation.run_ablation --config configs/ablation_beta.yaml` sera relance.
+La configuration actuelle d'ablation utilise maintenant 100 epochs maximum et 8 000 images equilibrees par combinaison d'attributs, avec arret anticipe. Ce fichier sera regenere quand `python -m evaluation.run_ablation --config configs/ablation_beta.yaml` sera relance.

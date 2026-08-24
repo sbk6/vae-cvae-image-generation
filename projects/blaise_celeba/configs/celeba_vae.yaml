@@ -19,8 +19,8 @@ model:
 training:
   seed: 42
   batch_size: 64
-  # Budget court demande pour comparer vite les runs sur davantage d'images.
-  epochs: 10
+  # Budget long pour exploiter davantage les 32k images equilibrees.
+  epochs: 100
   lr: 0.001
   # Candidat a tester apres l'ablation fine : moins fort que 1.0 pour limiter
   # le flou MSE/KL, tout en gardant un espace latent regularise.

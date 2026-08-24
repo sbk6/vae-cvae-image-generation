@@ -18,7 +18,8 @@ Le travail realise comprend :
   attributs (contrairement a une classe exclusive comme un chiffre) ;
 - une strategie de chargement de CelebA qui evite le probleme recurrent de
   quota Google Drive de `torchvision.datasets.CelebA` ;
-- l'entrainement des deux modeles sur un sous-echantillon reproductible ;
+- l'entrainement des deux modeles sur un sous-echantillon reproductible et
+  equilibre par combinaison d'attributs ;
 - une etude d'ablation sur le poids beta, d'abord baseline puis grille fine ;
 - une evaluation quantitative (reconstruction, KL, controlabilite du CVAE) ;
 - la visualisation de l'espace latent (t-SNE) et l'interpolation ;
@@ -91,9 +92,10 @@ CelebA expose 40 attributs binaires. Utiliser les 40 pour le CVAE ferait
 exploser le nombre de combinaisons (2^40) sans qu'aucune ne soit representee
 plus d'une fois dans un sous-echantillon de quelques milliers d'images :
 inexploitable. Un sous-ensemble restreint est donc necessaire, et son choix a
-ete verifie empiriquement plutot que suppose (`evaluation/inspect_attributes.py`) :
+ete verifie empiriquement sur la distribution naturelle du dataset plutot que
+suppose (`evaluation/inspect_attributes.py --n-samples 4000`) :
 
-| Attribut | Frequence mesuree (4 000 images, seed 42) |
+| Attribut | Frequence naturelle mesuree (4 000 images, seed 42) |
 |---|---|
 | Smiling | 47,6 % |
 | Male | 42,0 % |
@@ -243,7 +245,7 @@ final malgre la difference de taille d'image.
   l'initialisation et l'entrainement du modele.
 - Optimiseur Adam, taux d'apprentissage 0.001, taille de batch 64.
 - Modeles principaux ameliores : `latent_dim=128`, `hidden_channels=64`,
-  10 epochs sur 32 000 images equilibrees, avec arret anticipe (`patience=10`,
+  100 epochs sur 32 000 images equilibrees, avec arret anticipe (`patience=10`,
   `min_delta=1.0`). Le checkpoint `best_checkpoint.pth` garde la meilleure
   validation, et `last_checkpoint.pth` garde le dernier etat atteint.
 - `beta=0.5` avec KL annealing lineaire de 0.0 a 0.5 sur les 10 premieres
@@ -281,7 +283,7 @@ reconstruction. Ce premier resultat montre surtout que la zone interessante
 est entre `0.1` et `1.0`, car `5.0` degrade trop la reconstruction.
 
 La configuration actuelle lance donc une ablation plus fine :
-`[0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]`, avec 10 epochs par beta sur
+`[0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]`, avec 100 epochs par beta sur
 8 000 images equilibrees. Les scripts comparent maintenant la
 meilleure validation atteinte par chaque run, pas simplement la derniere
 epoch, ce qui est plus juste quand les runs peuvent s'arreter a des moments
@@ -438,7 +440,8 @@ pilote par les donnees du catalogue) :
   exploitables avec un sous-echantillon (section 1.3) : pas une couverture
   complete des attributs CelebA.
 - Pas de GPU disponible : le protocole ameliore limite l'entrainement a
-  10 epochs pour rester faisable avec 32 000 images.
+  100 epochs maximum, mais l'arret anticipe peut couper avant si la
+  validation stagne.
 - Controlabilite du CVAE mesuree par un proxy "plus proche centroide" par
   attribut (section 5.4), pas par un classifieur entraine : memes limites de
   principe que le proxy utilise par Sylvain sur MNIST (sensible au flou des
@@ -450,8 +453,9 @@ pilote par les donnees du catalogue) :
   `beta=0.5`.
 - Entrainer les configurations ameliorees `vae_improved` et `cvae_improved`,
   puis regenerer les figures et `comparison.json`.
-- Sur une machine avec GPU, augmenter le sous-echantillon (par exemple
-  20 000 ou 50 000 images d'entrainement) pour ameliorer la nettete.
+- Sur une machine avec GPU, augmenter encore le sous-echantillon (par exemple
+  50 000 images d'entrainement ou plus) pour ameliorer la nettete, en
+  verifiant que les 8 combinaisons restent assez representees.
 - Etendre le CVAE a davantage d'attributs, avec un sous-echantillon plus
   grand pour compenser la sparsite combinatoire.
 - Remplacer le proxy de controlabilite par un petit classifieur CNN
@@ -500,10 +504,15 @@ python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Verifier la frequence des attributs candidats (utilise pour justifier le
-choix de la section 1.3) :
+Verifier la frequence naturelle des attributs candidats (utile pour justifier
+le choix de la section 1.3, mais ce n'est pas le sampling d'entrainement) :
 ```bash
 python -m evaluation.inspect_attributes --n-samples 4000
+```
+
+Verifier la distribution reellement utilisee par l'entrainement equilibre :
+```bash
+python -m evaluation.inspect_attributes --config configs/celeba_vae.yaml --split train
 ```
 
 Entrainer le VAE principal :
