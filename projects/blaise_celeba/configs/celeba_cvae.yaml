@@ -20,7 +20,7 @@ training:
   beta: 0.5
   early_stopping:
     enabled: true
-    patience: 5
+    patience: 10
     min_delta: 1.0
   kl_annealing:
     enabled: true

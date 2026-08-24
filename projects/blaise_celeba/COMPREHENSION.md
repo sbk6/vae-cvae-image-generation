@@ -318,7 +318,7 @@ attributs candidats avant de choisir**, plutot que de deviner :
 | `lr` (taux d'apprentissage) | 0.001 | Controle la taille des pas que le reseau fait a chaque mise a jour de ses poids. Valeur par defaut classique pour Adam, ni trop grande (risque d'instabilite) ni trop petite (apprentissage trop lent). |
 | `batch_size` (taille de lot) | 64 | Nombre d'images regardees en meme temps avant chaque mise a jour du reseau. 64 est un compromis courant entre vitesse (plus grand = moins de mises a jour) et memoire disponible (plus grand = plus de memoire necessaire), adapte a un entrainement CPU. |
 | `epochs` (modeles principaux) | 80 max | Un "epoch" = un passage complet sur toutes les images d'entrainement. On autorise maintenant un budget plus long que le baseline de 18 epochs, mais ce budget est controle par l'arret anticipe. |
-| Arret anticipe | patience 5, `min_delta=1.0` | Si la loss de validation ne bat pas le meilleur score d'au moins 1.0 pendant 5 epochs consecutives, on arrete. Cela evite de continuer a entrainer quand le modele stagne ou commence a sur-apprendre. |
+| Arret anticipe | patience 10, `min_delta=1.0` | Si la loss de validation ne bat pas le meilleur score d'au moins 1.0 pendant 10 epochs consecutives, on arrete. Cela evite de continuer a entrainer quand le modele stagne ou commence a sur-apprendre. |
 | Checkpoints | `best_checkpoint.pth` et `last_checkpoint.pth` | Le meilleur checkpoint sert a l'evaluation/deploiement ; le dernier checkpoint permet de reprendre ou diagnostiquer la fin du run. |
 | `epochs` (ablation fine) | 40 max | L'ablation teste plus de valeurs de beta, donc chaque run garde un budget raisonnable, lui aussi controle par arret anticipe. |
 | `beta` (modeles ameliores) | 0.5 candidat | Le baseline a montre que `beta=5.0` degrade trop la reconstruction et que la zone utile est plutot entre 0.1 et 1.0. `0.5` est donc un candidat a verifier avec l'ablation fine. |
@@ -361,7 +361,7 @@ nouvelle configuration d'ablation teste donc :
 ```
 
 Chaque run peut aller jusqu'a 40 epochs, mais s'arrete si la validation ne
-s'ameliore plus pendant 5 epochs. La comparaison se fait sur la meilleure
+s'ameliore plus pendant 10 epochs. La comparaison se fait sur la meilleure
 validation atteinte par chaque beta, pas seulement sur la derniere epoch.
 
 ---

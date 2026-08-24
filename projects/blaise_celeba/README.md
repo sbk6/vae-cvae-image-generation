@@ -230,7 +230,7 @@ final malgre la difference de taille d'image.
   l'initialisation et l'entrainement du modele.
 - Optimiseur Adam, taux d'apprentissage 0.001, taille de batch 64.
 - Modeles principaux ameliores : `latent_dim=128`, `hidden_channels=64`,
-  budget maximal de 80 epochs, mais avec arret anticipe (`patience=5`,
+  budget maximal de 80 epochs, mais avec arret anticipe (`patience=10`,
   `min_delta=1.0`). Le checkpoint `best_checkpoint.pth` garde la meilleure
   validation, et `last_checkpoint.pth` garde le dernier etat atteint.
 - `beta=0.5` avec KL annealing lineaire de 0.0 a 0.5 sur les 10 premieres
@@ -269,7 +269,7 @@ est entre `0.1` et `1.0`, car `5.0` degrade trop la reconstruction.
 
 La configuration actuelle lance donc une ablation plus fine :
 `[0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]`, avec un budget de 40 epochs
-et un arret anticipe de patience 5. Les scripts comparent maintenant la
+et un arret anticipe de patience 10. Les scripts comparent maintenant la
 meilleure validation atteinte par chaque run, pas simplement la derniere
 epoch, ce qui est plus juste quand les runs peuvent s'arreter a des moments
 differents. Le candidat par defaut pour les modeles ameliores est `beta=0.5`
@@ -425,7 +425,7 @@ pilote par les donnees du catalogue) :
   exploitables avec un sous-echantillon (section 1.3) : pas une couverture
   complete des attributs CelebA.
 - Pas de GPU disponible : le protocole ameliore autorise 80 epochs, mais
-  l'arret anticipe (`patience=5`) evite de payer ce budget complet si la
+  l'arret anticipe (`patience=10`) evite de payer ce budget complet si la
   validation stagne.
 - Controlabilite du CVAE mesuree par un proxy "plus proche centroide" par
   attribut (section 5.4), pas par un classifieur entraine : memes limites de

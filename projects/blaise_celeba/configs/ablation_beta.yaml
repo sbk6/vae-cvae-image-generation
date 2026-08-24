@@ -27,7 +27,7 @@ training:
   lr: 0.001
   early_stopping:
     enabled: true
-    patience: 5
+    patience: 10
     min_delta: 1.0
   device: auto
   output_dir: results/experiments/ablation_beta_fine
