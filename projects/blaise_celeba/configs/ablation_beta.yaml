@@ -28,6 +28,7 @@ training:
     enabled: true
     patience: 10
     min_delta: 1.0
+    start_after_epoch: 20
   device: auto
   output_dir: results/experiments/ablation_beta_fine
 mlflow:

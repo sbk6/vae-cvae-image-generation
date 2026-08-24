@@ -246,8 +246,9 @@ final malgre la difference de taille d'image.
 - Optimiseur Adam, taux d'apprentissage 0.001, taille de batch 64.
 - Modeles principaux ameliores : `latent_dim=128`, `hidden_channels=64`,
   100 epochs sur 32 000 images equilibrees, avec arret anticipe (`patience=10`,
-  `min_delta=1.0`). Le checkpoint `best_checkpoint.pth` garde la meilleure
-  validation, et `last_checkpoint.pth` garde le dernier etat atteint.
+  `min_delta=1.0`, declenche seulement apres l'epoch 20). Le checkpoint
+  `best_checkpoint.pth` garde la meilleure validation, et `last_checkpoint.pth`
+  garde le dernier etat atteint.
 - `beta=0.5` avec KL annealing lineaire de 0.0 a 0.5 sur les 10 premieres
   epochs. L'objectif est de laisser le decodeur apprendre a reconstruire
   avant de regulariser fortement l'espace latent, puis de rester sous

@@ -29,6 +29,9 @@ training:
     enabled: true
     patience: 10
     min_delta: 1.0
+    # Ne pas compter la patience pendant le warmup KL : la loss change encore
+    # de nature quand beta augmente.
+    start_after_epoch: 20
   kl_annealing:
     enabled: true
     start_beta: 0.0

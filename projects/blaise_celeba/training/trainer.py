@@ -176,6 +176,7 @@ def train(
     early_stopping_enabled = early_stopping_cfg.get("enabled", False)
     patience = int(early_stopping_cfg.get("patience", 5))
     min_delta = float(early_stopping_cfg.get("min_delta", 0.0))
+    start_after_epoch = int(early_stopping_cfg.get("start_after_epoch", 0))
     epochs_without_improvement = 0
 
     smoke_test = config.get("smoke_test", False)
@@ -217,15 +218,16 @@ def train(
                     },
                     step=epoch,
                 )
-            else:
+            elif epoch > start_after_epoch:
                 epochs_without_improvement += 1
 
             save_checkpoint(model, optimizer, state, config, filename="last_checkpoint.pth")
 
-            if early_stopping_enabled and epochs_without_improvement >= patience:
+            if early_stopping_enabled and epoch > start_after_epoch and epochs_without_improvement >= patience:
                 print(
                     f"Arret anticipe : aucune amelioration de validation superieure a "
-                    f"{min_delta} depuis {patience} epochs. Meilleure epoch : {state.best_epoch}."
+                    f"{min_delta} depuis {patience} epochs apres l'epoch {start_after_epoch}. "
+                    f"Meilleure epoch : {state.best_epoch}."
                 )
                 break
 
