@@ -1,0 +1,6 @@
+{
+  "best_val_accuracy": 0.9886666666666667,
+  "test_accuracy": 0.9897,
+  "epochs": 5,
+  "seed": 42
+}
