@@ -252,24 +252,43 @@ le CPU), entrainer sur l'integralite prendrait beaucoup trop de temps.
 **Comment le sous-echantillon est tire.** On ne prend pas simplement les N
 premieres images du jeu de donnees : CelebA range ses photos par personne
 (plusieurs photos consecutives de la meme celebrite), donc prendre un
-"prefixe" donnerait un echantillon domine par une poignee de visages. A la
-place, on melange aleatoirement tout le jeu de donnees (avec une **seed**,
-un nombre de depart fixe pour le generateur aleatoire, ici `42`, ce qui
-rend le tirage reproductible : relancer le meme code redonne exactement le
-meme echantillon) puis on prend les N premiers apres melange.
+"prefixe" donnerait un echantillon domine par une poignee de visages.
+
+Le baseline melangeait aleatoirement le split complet avec une seed fixe,
+puis prenait les N premiers apres melange. C'etait deja mieux qu'un prefixe,
+mais ce n'etait pas optimal pour le CVAE : certaines combinaisons d'attributs
+restaient rares.
+
+La configuration actuelle utilise donc `sampling_strategy:
+balanced_conditions`. Le code groupe les images selon les 8 combinaisons
+possibles des 3 attributs (`Smiling`, `Male`, `Wavy_Hair`), puis selectionne
+autant que possible le meme nombre d'images par combinaison. La seed 42
+reste utilisee pour que le choix soit reproductible.
 
 **Tailles utilisees, et pourquoi elles different entre les modeles
 principaux et l'ablation :**
 
 | Usage | images d'entrainement | validation | test |
 |---|---|---|---|
-| VAE et CVAE principaux | 8 000 | 1 500 | 1 500 |
-| Etude d'ablation (chaque valeur de beta) | 4 000 | 1 000 | 1 000 |
+| VAE et CVAE principaux ameliores | 32 000 | 3 000 | 3 000 |
+| Etude d'ablation fine (chaque valeur de beta) | 8 000 | 2 000 | 2 000 |
+| Baseline historique | 8 000 | 1 500 | 1 500 |
+
+**Pourquoi pas la moitie de CelebA ?** La moitie du split train ferait
+environ 81 000 images. C'est tentant, mais pas forcement plus logique pour
+un CVAE conditionne par attributs : si on prend une grande portion aleatoire,
+on recopie surtout le desequilibre naturel de CelebA. Les combinaisons
+frequentes dominent, et les combinaisons rares restent plus faibles. Avec
+32 000 images equilibrees, on obtient environ 4 000 exemples par combinaison
+d'attributs, ce qui est beaucoup plus propre pedagogiquement et
+experimentalement. Sur GPU, on pourrait monter plus haut, mais il faudrait
+alors verifier que l'equilibrage reste possible ou accepter un compromis
+moins strict.
 
 L'ablation entraine un modele complet par valeur de beta. Comme la grille
 amelioree contient davantage de valeurs que le baseline, elle utilise un
 echantillon d'entrainement plus petit et un arret anticipe. Le jeu de
-validation/test reste assez grand (1 000 images) pour donner une mesure
+validation/test reste assez grand (2 000 images) pour donner une mesure
 fiable malgre tout.
 
 ### 5.3 Le choix des 3 attributs de conditionnement
@@ -303,9 +322,12 @@ attributs candidats avant de choisir**, plutot que de deviner :
    les cheveux ondules" concernerait moins de 2 % des images). Avec les 3
    attributs retenus, meme la combinaison la plus rare represente encore
    2,5 % de l'echantillon, soit environ 200 images sur les 8 000
-   d'entrainement : suffisant pour un reseau qui partage ses poids entre
-   toutes les combinaisons (ce n'est pas 8 reseaux separes, un seul reseau
-   apprend a gerer les 8 cas a la fois).
+   d'entrainement dans le baseline aleatoire. Avec le protocole actuel, on
+   force un sous-echantillon equilibre, donc chaque combinaison vise environ
+   4 000 images dans le train principal : le CVAE voit beaucoup mieux les cas
+   rares. C'est suffisant pour un reseau qui partage ses poids entre toutes
+   les combinaisons (ce n'est pas 8 reseaux separes, un seul reseau apprend a
+   gerer les 8 cas a la fois).
 
 ---
 
@@ -317,10 +339,10 @@ attributs candidats avant de choisir**, plutot que de deviner :
 | Optimiseur | Adam | Algorithme standard pour entrainer des reseaux de neurones, ajuste automatiquement la vitesse d'apprentissage pour chaque parametre du reseau. Choix par defaut tres repandu, pas de raison specifique de s'en ecarter ici. |
 | `lr` (taux d'apprentissage) | 0.001 | Controle la taille des pas que le reseau fait a chaque mise a jour de ses poids. Valeur par defaut classique pour Adam, ni trop grande (risque d'instabilite) ni trop petite (apprentissage trop lent). |
 | `batch_size` (taille de lot) | 64 | Nombre d'images regardees en meme temps avant chaque mise a jour du reseau. 64 est un compromis courant entre vitesse (plus grand = moins de mises a jour) et memoire disponible (plus grand = plus de memoire necessaire), adapte a un entrainement CPU. |
-| `epochs` (modeles principaux) | 80 max | Un "epoch" = un passage complet sur toutes les images d'entrainement. On autorise maintenant un budget plus long que le baseline de 18 epochs, mais ce budget est controle par l'arret anticipe. |
+| `epochs` (modeles principaux) | 10 | Un "epoch" = un passage complet sur toutes les images d'entrainement. Comme on passe de 8 000 a 32 000 images, 10 epochs donnent deja beaucoup plus de mises a jour utiles que le baseline. |
 | Arret anticipe | patience 10, `min_delta=1.0` | Si la loss de validation ne bat pas le meilleur score d'au moins 1.0 pendant 10 epochs consecutives, on arrete. Cela evite de continuer a entrainer quand le modele stagne ou commence a sur-apprendre. |
 | Checkpoints | `best_checkpoint.pth` et `last_checkpoint.pth` | Le meilleur checkpoint sert a l'evaluation/deploiement ; le dernier checkpoint permet de reprendre ou diagnostiquer la fin du run. |
-| `epochs` (ablation fine) | 40 max | L'ablation teste plus de valeurs de beta, donc chaque run garde un budget raisonnable, lui aussi controle par arret anticipe. |
+| `epochs` (ablation fine) | 10 | L'ablation teste plus de valeurs de beta, donc chaque run garde un budget raisonnable sur 8 000 images equilibrees. |
 | `beta` (modeles ameliores) | 0.5 candidat | Le baseline a montre que `beta=5.0` degrade trop la reconstruction et que la zone utile est plutot entre 0.1 et 1.0. `0.5` est donc un candidat a verifier avec l'ablation fine. |
 | KL annealing | 0.0 -> 0.5 sur 10 epochs | Au debut, on laisse le modele apprendre a reconstruire ; ensuite, on augmente progressivement la regularisation KL pour organiser l'espace latent. |
 
@@ -360,8 +382,7 @@ nouvelle configuration d'ablation teste donc :
 [0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
 ```
 
-Chaque run peut aller jusqu'a 40 epochs, mais s'arrete si la validation ne
-s'ameliore plus pendant 10 epochs. La comparaison se fait sur la meilleure
+Chaque run va jusqu'a 10 epochs. La comparaison se fait sur la meilleure
 validation atteinte par chaque beta, pas seulement sur la derniere epoch.
 
 ---

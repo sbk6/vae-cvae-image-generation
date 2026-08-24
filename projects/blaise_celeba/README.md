@@ -46,28 +46,39 @@ par Google Drive. Les 42 colonnes exposees ont ete verifiees directement
 (`datasets.load_dataset_builder`) avant d'ecrire le code de chargement,
 plutot que supposees identiques a la documentation CelebA officielle.
 
-### 1.2 Sous-echantillonnage
+### 1.2 Sous-echantillonnage equilibre
 
-L'enonce demande explicitement un sous-echantillon de CelebA. Le tirage se
-fait par melange (seed fixe) du split complet puis selection d'un prefixe,
-et non en prenant directement les N premieres images : CelebA est ordonne
-par identite (plusieurs photos consecutives de la meme personne), donc un
-prefixe biaiserait l'echantillon vers un petit nombre de visages
-(voir `data/dataset.py`).
+L'enonce demande explicitement un sous-echantillon de CelebA. Le baseline
+utilisait un melange reproductible du split complet, puis selectionnait un
+prefixe. La configuration amelioree va plus loin : elle construit un
+sous-echantillon equilibre par combinaison des 3 attributs de conditionnement
+(`Smiling`, `Male`, `Wavy_Hair`). Concretement, les images sont regroupees
+selon les 8 vecteurs possibles, puis on prend autant que possible le meme
+nombre d'images dans chaque groupe (voir `data/dataset.py`).
+
+Ce choix est plus logique pour un CVAE : le modele doit apprendre toutes les
+conditions, pas seulement les combinaisons naturellement majoritaires dans
+CelebA.
 
 Tailles utilisees :
 
 | Usage | n_train | n_val | n_test |
 |---|---|---|---|
-| VAE et CVAE principaux | 8 000 | 1 500 | 1 500 |
-| Etude d'ablation (par valeur de beta) | 4 000 | 1 000 | 1 000 |
+| VAE et CVAE principaux ameliores | 32 000 | 3 000 | 3 000 |
+| Etude d'ablation fine (par valeur de beta) | 8 000 | 2 000 | 2 000 |
+| Baseline historique | 8 000 | 1 500 | 1 500 |
 
-La difference entre les deux tailles suit le meme choix que Sylvain sur
-MNIST : l'ablation entraine un modele complet par valeur de beta, il faut
-donc rester dans un budget de calcul raisonnable sur CPU (pas de GPU
-disponible sur cette machine). Le val/test de l'ablation reste assez grand
-(1 000 images) pour donner une mesure fiable malgre le sous-echantillonnage
-du train.
+**Pourquoi pas directement la moitie du dataset ?** La moitie du split train
+CelebA ferait environ 81 000 images, mais ce n'est pas automatiquement plus
+pertinent ici. Avec 3 attributs binaires, certaines combinaisons sont rares.
+Prendre une tres grande portion aleatoire reproduirait surtout le desequilibre
+naturel du dataset : les conditions frequentes domineraient encore, et les
+conditions rares resteraient plus difficiles a apprendre. `32 000` images est
+un compromis plus defendable pour ce projet : 4 fois plus que le baseline,
+mais encore compatible avec un equilibrage fort des 8 combinaisons et avec un
+entrainement CPU raisonnable. Si une machine GPU est disponible, on peut
+monter plus haut, mais il faudra alors accepter un equilibrage moins strict
+ou changer les attributs retenus.
 
 Chaque sous-echantillon (images redimensionnees en 64x64, attributs extraits)
 est mis en cache localement apres le premier chargement
@@ -102,9 +113,11 @@ guide ce choix :
    "porte des lunettes ET cheveux ondules" concernerait moins de 2 % des
    images), avec trop peu d'exemples reels pour que le decodeur apprenne
    correctement cette combinaison. Verification sur l'echantillon reel avec
-   les 3 attributs retenus : la combinaison la plus rare (`Smiling=1,
-   Male=1, Wavy_Hair=1`) represente encore 2,5 % des images, soit environ
-   200 exemples sur un sous-echantillon de 8 000 images d'entrainement,
+   les 3 attributs retenus : en tirage aleatoire, la combinaison la plus
+   rare (`Smiling=1, Male=1, Wavy_Hair=1`) represente encore 2,5 % des
+   images, soit environ 200 exemples sur le baseline de 8 000 images.
+   Avec le sous-echantillonnage equilibre actuel, chaque combinaison vise
+   environ 4 000 exemples dans les 32 000 images d'entrainement,
    suffisant pour un reseau qui partage ses poids entre toutes les
    combinaisons (ce n'est pas un classifieur separe par combinaison).
 
@@ -230,7 +243,7 @@ final malgre la difference de taille d'image.
   l'initialisation et l'entrainement du modele.
 - Optimiseur Adam, taux d'apprentissage 0.001, taille de batch 64.
 - Modeles principaux ameliores : `latent_dim=128`, `hidden_channels=64`,
-  budget maximal de 80 epochs, mais avec arret anticipe (`patience=10`,
+  10 epochs sur 32 000 images equilibrees, avec arret anticipe (`patience=10`,
   `min_delta=1.0`). Le checkpoint `best_checkpoint.pth` garde la meilleure
   validation, et `last_checkpoint.pth` garde le dernier etat atteint.
 - `beta=0.5` avec KL annealing lineaire de 0.0 a 0.5 sur les 10 premieres
@@ -268,8 +281,8 @@ reconstruction. Ce premier resultat montre surtout que la zone interessante
 est entre `0.1` et `1.0`, car `5.0` degrade trop la reconstruction.
 
 La configuration actuelle lance donc une ablation plus fine :
-`[0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]`, avec un budget de 40 epochs
-et un arret anticipe de patience 10. Les scripts comparent maintenant la
+`[0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]`, avec 10 epochs par beta sur
+8 000 images equilibrees. Les scripts comparent maintenant la
 meilleure validation atteinte par chaque run, pas simplement la derniere
 epoch, ce qui est plus juste quand les runs peuvent s'arreter a des moments
 differents. Le candidat par defaut pour les modeles ameliores est `beta=0.5`
@@ -297,9 +310,9 @@ d'origine, signe que l'encodeur capture bien l'information utile. Sur la
 grille CVAE, l'inspection visuelle des 8 lignes montre des tendances
 coherentes avec les attributs demandes (par exemple, les lignes associees a
 `Male=1` produisent des visages aux traits plus masculins), mais avec des
-exceptions ligne par ligne : attendu avec seulement 8 000 images
-d'entrainement partagees entre 8 combinaisons, dont la plus rare ne
-represente qu'environ 2,5 % du sous-echantillon (section 1.3).
+exceptions ligne par ligne : attendu avec le baseline de 8 000 images. La
+configuration actuelle augmente le train set a 32 000 images equilibrees
+pour reduire ce probleme.
 
 ### 5.2 Espace latent (t-SNE)
 
@@ -375,9 +388,10 @@ aux deux.
 
 Ces chiffres depassent le hasard (50 %) mais restent modestes, en
 particulier pour `Male` (51,9 %, a peine mieux qu'un tirage aleatoire). Deux
-lectures possibles, pas mutuellement exclusives : (1) le CVAE controle
-imparfaitement cet attribut avec seulement 8 000 images d'entrainement
-partagees entre 8 combinaisons, ou (2) le proxy lui-meme sous-estime la
+lectures possibles, pas mutuellement exclusives : (1) le CVAE baseline
+controle imparfaitement cet attribut avec seulement 8 000 images
+d'entrainement partagees entre 8 combinaisons, ou (2) le proxy lui-meme
+sous-estime la
 controlabilite reelle, exactement comme Sylvain l'a constate et documente
 sur MNIST (le flou des images generees par un VAE degrade la fiabilite d'une
 mesure fondee sur la distance en pixels). L'inspection visuelle de
@@ -417,16 +431,14 @@ pilote par les donnees du catalogue) :
 
 ## 6. Limites actuelles
 
-- Sous-echantillon de 8 000 images d'entrainement (modeles principaux) sur
-  les 162 770 disponibles dans le split train complet : suffisant pour
-  observer un apprentissage net, mais un entrainement sur davantage
-  d'images ameliorerait probablement la nettete des visages generes.
+- Sous-echantillon de 32 000 images d'entrainement equilibrees sur les
+  162 770 disponibles dans le split train complet : beaucoup plus solide que
+  le baseline 8 000, mais encore inferieur au dataset complet.
 - 3 attributs de conditionnement sur les 40 disponibles, choisis pour rester
   exploitables avec un sous-echantillon (section 1.3) : pas une couverture
   complete des attributs CelebA.
-- Pas de GPU disponible : le protocole ameliore autorise 80 epochs, mais
-  l'arret anticipe (`patience=10`) evite de payer ce budget complet si la
-  validation stagne.
+- Pas de GPU disponible : le protocole ameliore limite l'entrainement a
+  10 epochs pour rester faisable avec 32 000 images.
 - Controlabilite du CVAE mesuree par un proxy "plus proche centroide" par
   attribut (section 5.4), pas par un classifieur entraine : memes limites de
   principe que le proxy utilise par Sylvain sur MNIST (sensible au flou des

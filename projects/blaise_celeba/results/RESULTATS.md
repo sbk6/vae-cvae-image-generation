@@ -1,6 +1,6 @@
-# Resultats. Etude d'ablation sur beta (beta-VAE), CelebA
+# Resultats historiques. Etude d'ablation fine sur beta (beta-VAE), CelebA
 
-Protocole : VAE identique pour toutes les valeurs de beta (latent_dim=64, hidden_channels=32, epochs=40, seed=42, n_train=4000).
+Protocole deja execute avant le dernier changement de configuration : VAE identique pour toutes les valeurs de beta (latent_dim=64, hidden_channels=32, epochs=40, seed=42, n_train=4000).
 
 | beta | meilleure epoch | reconstruction (val) | KL (val) | loss totale (val) |
 |---|---|---|---|---|
@@ -14,3 +14,5 @@ Protocole : VAE identique pour toutes les valeurs de beta (latent_dim=64, hidden
 | 2.0 | 32 | 618.87 | 101.30 | 821.48 |
 
 Lecture : quand beta augmente, la KL est davantage penalisee, donc elle baisse (latent plus proche de la loi normale, mieux regularise), mais la reconstruction se degrade (image reconstruite moins fidele). Un beta trop petit fait l'inverse : bonne reconstruction, mais latent peu structure, avec un risque de mauvaise generation quand on echantillonne un z aleatoire.
+
+La configuration actuelle d'ablation utilise maintenant 10 epochs et 8 000 images equilibrees par combinaison d'attributs. Ce fichier sera regenere quand `python -m evaluation.run_ablation --config configs/ablation_beta.yaml` sera relance.

@@ -3,13 +3,13 @@ dataset:
   image_size: [64, 64]
   channels: 3
   attributes: [Smiling, Male, Wavy_Hair]
+  sampling_strategy: balanced_conditions
   seed: 42
-  # Sous-echantillon (l'enonce le demande explicitement pour CelebA) : voir
-  # data/dataset.py pour la justification du tirage aleatoire plutot qu'un
-  # prefixe, et le README pour la justification de la taille.
-  n_train: 8000
-  n_val: 1500
-  n_test: 1500
+  # 32k = 4x le baseline 8k, tout en restant compatible avec un vrai
+  # equilibrage des 8 combinaisons d'attributs.
+  n_train: 32000
+  n_val: 3000
+  n_test: 3000
 model:
   type: vae
   # Configuration amelioree : plus de capacite pour des visages couleur que
@@ -19,9 +19,8 @@ model:
 training:
   seed: 42
   batch_size: 64
-  # Budget haut, controle par early stopping : l'entrainement peut aller loin
-  # si la validation continue de progresser, mais s'arrete quand il stagne.
-  epochs: 80
+  # Budget court demande pour comparer vite les runs sur davantage d'images.
+  epochs: 10
   lr: 0.001
   # Candidat a tester apres l'ablation fine : moins fort que 1.0 pour limiter
   # le flou MSE/KL, tout en gardant un espace latent regularise.

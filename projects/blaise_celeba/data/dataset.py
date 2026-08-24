@@ -14,11 +14,10 @@ Google Drive. C'est un choix documente et assume, pas un contournement
 silencieux.
 
 Le sujet demande explicitement un sous-echantillon de CelebA : on ne charge
-donc jamais l'integralite des ~203 000 images. Le sous-echantillon est tire
-aleatoirement (seed fixe) apres melange du split complet, plutot que de
-prendre les N premieres images : CelebA est ordonne par identite (plusieurs
-photos consecutives de la meme personne), donc prendre un prefixe biaiserait
-l'echantillon vers un petit nombre de visages.
+donc jamais l'integralite des ~203 000 images. Par defaut, le
+sous-echantillon est equilibre par combinaison d'attributs de conditionnement
+(`Smiling`, `Male`, `Wavy_Hair`) : on evite ainsi qu'une combinaison rare soit
+presque absente du train set du CVAE.
 
 Une fois tire, le sous-echantillon est mis en cache localement (images deja
 redimensionnees, deja converties en tableau numpy) pour ne pas repayer le
@@ -26,7 +25,7 @@ telechargement ni le redimensionnement a chaque lancement.
 """
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -78,13 +77,97 @@ class CelebASubsample(Dataset):
         return image, attrs
 
 
-def _cache_path(split: str, n_samples: int, seed: int, image_size: Tuple[int, int], attributes: Sequence[str]) -> Path:
+def _cache_path(
+    split: str,
+    n_samples: int,
+    seed: int,
+    image_size: Tuple[int, int],
+    attributes: Sequence[str],
+    sampling_strategy: str,
+) -> Path:
     attrs_tag = "-".join(attributes)
-    name = f"{split}_n{n_samples}_seed{seed}_{image_size[0]}x{image_size[1]}_{attrs_tag}.npz"
+    name = (
+        f"{split}_n{n_samples}_seed{seed}_{sampling_strategy}_"
+        f"{image_size[0]}x{image_size[1]}_{attrs_tag}.npz"
+    )
     return CACHE_DIR / name
 
 
-def _download_split(split: str, n_samples: int, seed: int, image_size: Tuple[int, int], attributes: Sequence[str]):
+def _condition_key(row: dict, attributes: Sequence[str]) -> Tuple[int, ...]:
+    return tuple(1 if row[attr_name] > 0 else 0 for attr_name in attributes)
+
+
+def _balanced_condition_indices(hf_dataset, n_samples: int, seed: int, attributes: Sequence[str]) -> List[int]:
+    """Selectionne des indices aussi equilibres que possible par combinaison d'attributs."""
+    rng = np.random.default_rng(seed)
+    groups: Dict[Tuple[int, ...], List[int]] = {}
+    attr_dataset = hf_dataset.select_columns(list(attributes))
+
+    for index, row in enumerate(attr_dataset):
+        key = _condition_key(row, attributes)
+        groups.setdefault(key, []).append(index)
+
+    for indices in groups.values():
+        rng.shuffle(indices)
+
+    expected_groups = 2 ** len(attributes)
+    if len(groups) < expected_groups:
+        print(
+            f"[data] Attention : {len(groups)}/{expected_groups} combinaisons "
+            f"d'attributs presentes dans le split."
+        )
+
+    n_take = min(n_samples, len(hf_dataset))
+    combos = sorted(groups)
+    min_group_size = min(len(groups[combo]) for combo in combos)
+    base_per_combo = min(n_take // len(combos), min_group_size)
+
+    selected: List[int] = []
+    offsets: Dict[Tuple[int, ...], int] = {}
+    for combo in combos:
+        selected.extend(groups[combo][:base_per_combo])
+        offsets[combo] = base_per_combo
+
+    # Si n_samples n'est pas divisible par le nombre de combinaisons, ou si on
+    # demande plus que l'equilibrage strict possible, on complete en round-robin
+    # aleatoire avec les exemples restants. Les classes rares restent donc
+    # protegees au maximum avant d'accepter un leger desequilibre.
+    remaining = n_take - len(selected)
+    while remaining > 0:
+        progress = False
+        order = list(combos)
+        rng.shuffle(order)
+        for combo in order:
+            if remaining <= 0:
+                break
+            offset = offsets[combo]
+            if offset >= len(groups[combo]):
+                continue
+            selected.append(groups[combo][offset])
+            offsets[combo] = offset + 1
+            remaining -= 1
+            progress = True
+        if not progress:
+            break
+
+    rng.shuffle(selected)
+    counts = {combo: offsets[combo] for combo in combos}
+    print(f"[data] Selection equilibree par attributs ({split_counts_label(attributes)}): {counts}")
+    return selected
+
+
+def split_counts_label(attributes: Sequence[str]) -> str:
+    return ", ".join(attributes)
+
+
+def _download_split(
+    split: str,
+    n_samples: int,
+    seed: int,
+    image_size: Tuple[int, int],
+    attributes: Sequence[str],
+    sampling_strategy: str,
+):
     """Telecharge le split HF, tire un sous-echantillon reproductible, redimensionne."""
     from datasets import load_dataset
     from PIL import Image
@@ -102,15 +185,23 @@ def _download_split(split: str, n_samples: int, seed: int, image_size: Tuple[int
         )
 
     n_available = len(hf_dataset)
-    n_take = min(n_samples, n_available)
-    # Melange avec seed fixe puis prefixe : reproductible, et evite le biais
-    # d'ordre par identite explique dans le docstring du module.
-    shuffled = hf_dataset.shuffle(seed=seed).select(range(n_take))
+    if sampling_strategy == "balanced_conditions":
+        selected_indices = _balanced_condition_indices(hf_dataset, n_samples, seed, attributes)
+        sampled = hf_dataset.select(selected_indices)
+    elif sampling_strategy == "random":
+        n_take = min(n_samples, n_available)
+        sampled = hf_dataset.shuffle(seed=seed).select(range(n_take))
+    else:
+        raise ValueError(
+            f"Strategie de sous-echantillonnage inconnue : {sampling_strategy}. "
+            "Valeurs acceptees : 'balanced_conditions', 'random'."
+        )
 
+    n_take = len(sampled)
     images = np.zeros((n_take, image_size[0], image_size[1], 3), dtype=np.uint8)
     attrs = np.zeros((n_take, len(attributes)), dtype=np.float32)
 
-    for index, row in enumerate(shuffled):
+    for index, row in enumerate(sampled):
         image = row["image"].convert("RGB").resize(image_size, Image.BILINEAR)
         images[index] = np.array(image, dtype=np.uint8)
         # Les attributs du miroir HF sont encodes en -1/1 (convention CelebA
@@ -127,15 +218,16 @@ def load_split(
     seed: int = 42,
     image_size: Tuple[int, int] = (64, 64),
     attributes: Sequence[str] = DEFAULT_ATTRIBUTES,
+    sampling_strategy: str = "balanced_conditions",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Renvoie (images, attributs) pour un split, en utilisant le cache local si present."""
     attributes = list(attributes)
-    cache_path = _cache_path(split, n_samples, seed, image_size, attributes)
+    cache_path = _cache_path(split, n_samples, seed, image_size, attributes, sampling_strategy)
     if cache_path.exists():
         with np.load(cache_path) as data:
             return data["images"], data["attributes"]
 
-    images, attrs = _download_split(split, n_samples, seed, image_size, attributes)
+    images, attrs = _download_split(split, n_samples, seed, image_size, attributes, sampling_strategy)
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(cache_path, images=images, attributes=attrs)
@@ -154,14 +246,15 @@ def build_dataloaders(config: dict) -> Tuple[DataLoader, DataLoader, DataLoader,
     image_size = tuple(dataset_cfg.get("image_size", [64, 64]))
     attributes = dataset_cfg.get("attributes", DEFAULT_ATTRIBUTES)
     seed = dataset_cfg.get("seed", 42)
+    sampling_strategy = dataset_cfg.get("sampling_strategy", "balanced_conditions")
 
     n_train = dataset_cfg.get("n_train", 8000)
     n_val = dataset_cfg.get("n_val", 1500)
     n_test = dataset_cfg.get("n_test", 1500)
 
-    train_images, train_attrs = load_split("train", n_train, seed, image_size, attributes)
-    val_images, val_attrs = load_split("val", n_val, seed, image_size, attributes)
-    test_images, test_attrs = load_split("test", n_test, seed, image_size, attributes)
+    train_images, train_attrs = load_split("train", n_train, seed, image_size, attributes, sampling_strategy)
+    val_images, val_attrs = load_split("val", n_val, seed, image_size, attributes, sampling_strategy)
+    test_images, test_attrs = load_split("test", n_test, seed, image_size, attributes, sampling_strategy)
 
     train_set = CelebASubsample(train_images, train_attrs)
     val_set = CelebASubsample(val_images, val_attrs)
