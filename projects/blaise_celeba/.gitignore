@@ -21,6 +21,18 @@ results/experiments/**/checkpoints/
 *.pth
 *.pt
 
+# Nouveaux runs locaux generes par le protocole ameliore. Les meilleurs
+# resultats peuvent etre copies/figes explicitement si on decide de les livrer.
+results/experiments/vae_improved/
+results/experiments/cvae_improved/
+results/experiments/ablation_beta_fine/
+
+# Runs MLflow locaux : metadonnees, artefacts et copies de checkpoints.
+mlruns/
+mlartifacts/
+mlflow.db
+mlflow.db-*
+
 # Systeme.
 .DS_Store
 Thumbs.db

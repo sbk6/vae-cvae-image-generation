@@ -30,6 +30,10 @@ def run_one_beta(base_config: dict, beta: float) -> dict:
     config["training"]["beta"] = beta
     config["training"]["output_dir"] = str(Path(base_config["training"]["output_dir"]) / f"beta_{beta}")
     config["smoke_test"] = False
+    if config.get("mlflow", {}).get("enabled", False):
+        config["mlflow"]["run_name"] = f"vae_beta_{beta}"
+        config["mlflow"].setdefault("tags", {})
+        config["mlflow"]["tags"]["beta"] = str(beta)
 
     set_seed(config["training"].get("seed", 42))
     train_loader, val_loader, test_loader, dataset_info = build_dataloaders(config)

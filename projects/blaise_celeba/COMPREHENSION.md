@@ -490,7 +490,38 @@ CelebA suit exactement le meme principe (`backend/adapters/blaise_celeba.py`) :
 
 ---
 
-## 11. Glossaire rapide
+## 11. Pourquoi ajouter MLflow avant le deploiement
+
+MLflow sert ici a suivre proprement les experiences avant de choisir quel
+checkpoint deployer. Sans MLflow, on a seulement des fichiers CSV et des
+dossiers de checkpoints ; ca fonctionne, mais comparer beaucoup de runs
+devient vite fragile. Avec MLflow, chaque entrainement devient un run
+consultable dans une interface web.
+
+Pour chaque run, on enregistre :
+
+- les parametres importants (`beta`, `latent_dim`, `hidden_channels`,
+  `epochs`, early stopping, taille du dataset) ;
+- les metriques a chaque epoch (`train_loss`, `val_loss`, reconstruction,
+  KL, beta courant) ;
+- le meilleur score de validation et l'epoch correspondante ;
+- les artefacts necessaires pour reproduire ou deployer le modele :
+  `resolved_config.yaml`, `training_log.csv`, `best_checkpoint.pth` et
+  `last_checkpoint.pth`.
+
+Concretement, le bloc `mlflow` des fichiers YAML active ce suivi. Le stockage
+est local (`sqlite:///mlflow.db`), donc il ne depend pas d'un serveur externe.
+Pour voir les runs, on lance simplement
+`mlflow ui --backend-store-uri sqlite:///mlflow.db` depuis
+`projects/blaise_celeba/`.
+
+MLflow ne remplace pas la demo web : il aide a choisir et documenter le bon
+modele a deployer. La demo web, elle, charge ensuite le checkpoint retenu via
+`backend/adapters/blaise_celeba.py`.
+
+---
+
+## 12. Glossaire rapide
 
 | Terme | Explication |
 |---|---|
@@ -507,15 +538,17 @@ CelebA suit exactement le meme principe (`backend/adapters/blaise_celeba.py`) :
 | Seed | Nombre de depart d'un generateur aleatoire, fixe pour rendre un resultat reproductible. |
 | Checkpoint | Fichier qui sauvegarde l'etat (les poids) d'un reseau entraine, pour pouvoir le recharger plus tard sans le reentrainer. |
 | Sur-apprentissage (overfitting) | Quand un modele "apprend par coeur" les donnees d'entrainement et devient moins bon sur des donnees jamais vues. |
+| MLflow | Outil qui garde l'historique des experiences : parametres, metriques, artefacts et checkpoints. |
 
 ---
 
-## 12. Pour aller plus loin dans le code
+## 13. Pour aller plus loin dans le code
 
 - `data/dataset.py` : chargement et sous-echantillonnage des donnees (section 5).
 - `models/layers.py`, `models/vae.py`, `models/cvae.py` : l'architecture (section 4).
 - `losses/elbo.py` : la loss ELBO (section 2.3).
 - `training/trainer.py`, `training/train.py` : la boucle d'entrainement (section 6).
+- `mlflow_utils.py` : encapsulation optionnelle du suivi MLflow (section 11).
 - `evaluation/run_ablation.py` : l'etude d'ablation (section 7).
 - `evaluation/generate_grids.py`, `evaluation/latent_visualization.py`, `evaluation/interpolation.py` : les figures (section 8).
 - `evaluation/evaluate.py` : l'evaluation chiffree (section 9).

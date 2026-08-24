@@ -31,3 +31,9 @@ training:
     min_delta: 1.0
   device: auto
   output_dir: results/experiments/ablation_beta_fine
+mlflow:
+  enabled: true
+  tracking_uri: sqlite:///mlflow.db
+  experiment_name: blaise_celeba_ablation
+  tags:
+    stage: beta_ablation

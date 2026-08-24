@@ -12,9 +12,11 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import torch
+import yaml
 from tqdm import tqdm
 
 from losses.elbo import elbo_loss
+from mlflow_utils import MLflowLogger
 
 
 @dataclass
@@ -88,6 +90,15 @@ def initialize_csv(output_dir: Path) -> Path:
     return csv_path
 
 
+def save_resolved_config(config: Dict, output_dir: Path) -> Path:
+    """Sauvegarde la config effective du run, apres overrides CLI."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    config_path = output_dir / "resolved_config.yaml"
+    with open(config_path, "w", encoding="utf-8") as config_file:
+        yaml.safe_dump(config, config_file, sort_keys=False, allow_unicode=True)
+    return config_path
+
+
 def log_metrics(csv_path: Path, epoch: int, phase: str, metrics: Dict[str, float]) -> None:
     with open(csv_path, mode="a", newline="", encoding="utf-8") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=["epoch", "phase", "loss", "reconstruction", "kl", "beta"])
@@ -155,6 +166,7 @@ def train(
 
     state = TrainingState(epoch=0, best_loss=float("inf"), best_epoch=0, device=device, output_dir=output_dir)
     csv_path = initialize_csv(output_dir)
+    resolved_config_path = save_resolved_config(config, output_dir)
 
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config["training"]["lr"])
@@ -172,37 +184,55 @@ def train(
         epochs = 1
         early_stopping_enabled = False
 
-    for epoch in range(1, epochs + 1):
-        state.epoch = epoch
-        beta = beta_for_epoch(config, epoch)
-        train_metrics = run_epoch(model, train_loader, optimizer, device, beta, True, conditioned, max_batches)
-        val_metrics = run_epoch(model, val_loader, None, device, beta, False, conditioned, max_batches)
+    with MLflowLogger(config) as mlflow_logger:
+        mlflow_logger.log_artifact(resolved_config_path, artifact_path="config")
+        for epoch in range(1, epochs + 1):
+            state.epoch = epoch
+            beta = beta_for_epoch(config, epoch)
+            train_metrics = run_epoch(model, train_loader, optimizer, device, beta, True, conditioned, max_batches)
+            val_metrics = run_epoch(model, val_loader, None, device, beta, False, conditioned, max_batches)
 
-        log_metrics(csv_path, epoch, "train", train_metrics)
-        log_metrics(csv_path, epoch, "val", val_metrics)
-        print(
-            f"epoch {epoch}/{epochs} | train loss {train_metrics['loss']:.2f} "
-            f"| val loss {val_metrics['loss']:.2f} (recon {val_metrics['reconstruction']:.2f}, "
-            f"kl {val_metrics['kl']:.2f}, beta {beta:.4f})"
-        )
-
-        improved = val_metrics["loss"] < (state.best_loss - min_delta)
-        if improved:
-            state.best_loss = val_metrics["loss"]
-            state.best_epoch = epoch
-            epochs_without_improvement = 0
-            save_checkpoint(model, optimizer, state, config)
-        else:
-            epochs_without_improvement += 1
-
-        save_checkpoint(model, optimizer, state, config, filename="last_checkpoint.pth")
-
-        if early_stopping_enabled and epochs_without_improvement >= patience:
+            log_metrics(csv_path, epoch, "train", train_metrics)
+            log_metrics(csv_path, epoch, "val", val_metrics)
+            mlflow_logger.log_metrics(train_metrics, step=epoch, prefix="train_")
+            mlflow_logger.log_metrics(val_metrics, step=epoch, prefix="val_")
             print(
-                f"Arret anticipe : aucune amelioration de validation superieure a "
-                f"{min_delta} depuis {patience} epochs. Meilleure epoch : {state.best_epoch}."
+                f"epoch {epoch}/{epochs} | train loss {train_metrics['loss']:.2f} "
+                f"| val loss {val_metrics['loss']:.2f} (recon {val_metrics['reconstruction']:.2f}, "
+                f"kl {val_metrics['kl']:.2f}, beta {beta:.4f})"
             )
-            break
+
+            improved = val_metrics["loss"] < (state.best_loss - min_delta)
+            if improved:
+                state.best_loss = val_metrics["loss"]
+                state.best_epoch = epoch
+                epochs_without_improvement = 0
+                save_checkpoint(model, optimizer, state, config)
+                mlflow_logger.log_metrics(
+                    {
+                        "best_val_loss": state.best_loss,
+                        "best_epoch": state.best_epoch,
+                        "best_val_reconstruction": val_metrics["reconstruction"],
+                        "best_val_kl": val_metrics["kl"],
+                    },
+                    step=epoch,
+                )
+            else:
+                epochs_without_improvement += 1
+
+            save_checkpoint(model, optimizer, state, config, filename="last_checkpoint.pth")
+
+            if early_stopping_enabled and epochs_without_improvement >= patience:
+                print(
+                    f"Arret anticipe : aucune amelioration de validation superieure a "
+                    f"{min_delta} depuis {patience} epochs. Meilleure epoch : {state.best_epoch}."
+                )
+                break
+
+        mlflow_logger.log_metrics({"best_val_loss": state.best_loss, "best_epoch": state.best_epoch})
+        mlflow_logger.log_artifact(csv_path, artifact_path="logs")
+        mlflow_logger.log_artifact(output_dir / "best_checkpoint.pth", artifact_path="checkpoints")
+        mlflow_logger.log_artifact(output_dir / "last_checkpoint.pth", artifact_path="checkpoints")
 
     print(
         f"Entrainement termine. Meilleure loss de validation : {state.best_loss:.4f} "

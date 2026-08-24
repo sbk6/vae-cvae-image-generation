@@ -444,8 +444,36 @@ pilote par les donnees du catalogue) :
   grand pour compenser la sparsite combinatoire.
 - Remplacer le proxy de controlabilite par un petit classifieur CNN
   multi-label entraine sur CelebA.
-- Brancher MLflow apres stabilisation du protocole, pour logger params,
-  metriques, checkpoints, figures et configs.
+- Utiliser les runs MLflow maintenant integres pour comparer proprement
+  ablations, VAE et CVAE avant le deploiement final.
+
+## 8. Suivi MLflow
+
+MLflow est active par defaut dans les configs (`mlflow.enabled: true`). Les
+runs sont stockes localement dans une base SQLite
+`projects/blaise_celeba/mlflow.db` via `tracking_uri: sqlite:///mlflow.db`.
+
+Chaque entrainement logge :
+
+- les parametres de config aplatis (`dataset.*`, `model.*`, `training.*`) ;
+- les metriques `train_loss`, `val_loss`, reconstruction, KL et beta a chaque
+  epoch ;
+- `best_val_loss` et `best_epoch` ;
+- les artefacts `resolved_config.yaml`, `training_log.csv`,
+  `best_checkpoint.pth` et `last_checkpoint.pth`.
+
+Pour ouvrir l'interface MLflow :
+
+```bash
+cd projects/blaise_celeba
+. .venv/bin/activate
+mlflow ui --backend-store-uri sqlite:///mlflow.db --host 127.0.0.1 --port 5000
+```
+
+Puis ouvrir `http://127.0.0.1:5000` dans le navigateur.
+
+Pour desactiver MLflow temporairement, mettre `enabled: false` dans le bloc
+`mlflow` de la config concernee.
 
 ---
 

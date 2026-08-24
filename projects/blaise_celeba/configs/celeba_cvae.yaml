@@ -29,3 +29,10 @@ training:
     warmup_epochs: 10
   device: auto
   output_dir: results/experiments/cvae_improved
+mlflow:
+  enabled: true
+  tracking_uri: sqlite:///mlflow.db
+  experiment_name: blaise_celeba
+  run_name: cvae_improved
+  tags:
+    stage: improved_training
