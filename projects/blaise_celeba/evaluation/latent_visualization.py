@@ -11,7 +11,7 @@ figure pour ne pas laisser croire a une classe exclusive.
 
 Usage (depuis projects/blaise_celeba/) :
     python -m evaluation.latent_visualization --config configs/celeba_vae.yaml \\
-        --checkpoint results/experiments/vae_main/best_checkpoint.pth \\
+        --checkpoint results/experiments/vae_improved/best_checkpoint.pth \\
         --output results/figures/latent_tsne_vae.png
 """
 import argparse

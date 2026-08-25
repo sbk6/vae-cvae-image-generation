@@ -3,19 +3,38 @@ dataset:
   image_size: [64, 64]
   channels: 3
   attributes: [Smiling, Male, Wavy_Hair]
+  sampling_strategy: balanced_conditions
   seed: 42
-  n_train: 8000
-  n_val: 1500
-  n_test: 1500
+  n_train: 32000
+  n_val: 3000
+  n_test: 3000
 model:
   type: cvae
-  latent_dim: 64
-  hidden_channels: 32
+  # Meme capacite que le VAE ameliore pour garder une comparaison juste.
+  latent_dim: 128
+  hidden_channels: 64
 training:
   seed: 42
   batch_size: 64
-  epochs: 18
+  epochs: 100
   lr: 0.001
-  beta: 1.0
+  beta: 0.5
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 1.0
+    start_after_epoch: 20
+  kl_annealing:
+    enabled: true
+    start_beta: 0.0
+    final_beta: 0.5
+    warmup_epochs: 10
   device: auto
-  output_dir: results/experiments/cvae_main
+  output_dir: results/experiments/cvae_improved
+mlflow:
+  enabled: true
+  tracking_uri: sqlite:///mlflow.db
+  experiment_name: blaise_celeba
+  run_name: cvae_improved
+  tags:
+    stage: improved_training

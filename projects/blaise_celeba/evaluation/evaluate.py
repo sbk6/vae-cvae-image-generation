@@ -126,9 +126,9 @@ def evaluate_controllability(config_path: str, checkpoint_path: str, centroids: 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vae-config", type=str, default="configs/celeba_vae.yaml")
-    parser.add_argument("--vae-checkpoint", type=str, default="results/experiments/vae_main/best_checkpoint.pth")
+    parser.add_argument("--vae-checkpoint", type=str, default="results/experiments/vae_improved/best_checkpoint.pth")
     parser.add_argument("--cvae-config", type=str, default="configs/celeba_cvae.yaml")
-    parser.add_argument("--cvae-checkpoint", type=str, default="results/experiments/cvae_main/best_checkpoint.pth")
+    parser.add_argument("--cvae-checkpoint", type=str, default="results/experiments/cvae_improved/best_checkpoint.pth")
     parser.add_argument("--output", type=str, default="results/experiments/comparison.json")
     args = parser.parse_args()
 

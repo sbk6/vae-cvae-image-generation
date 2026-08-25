@@ -1,23 +1,66 @@
 [
   {
+    "beta": 0.05,
+    "best_epoch": 32,
+    "best_val_loss": 523.0837553710937,
+    "best_val_reconstruction": 503.54702099609375,
+    "best_val_kl": 390.73479711914064,
+    "output_dir": "results/experiments/ablation_beta_fine/beta_0.05"
+  },
+  {
     "beta": 0.1,
-    "final_val_loss": 632.901521484375,
-    "final_val_reconstruction": 605.0001240234375,
-    "final_val_kl": 279.0139609375,
-    "output_dir": "results/experiments/ablation/beta_0.1"
+    "best_epoch": 28,
+    "best_val_loss": 550.7812163085938,
+    "best_val_reconstruction": 520.5420380859375,
+    "best_val_kl": 302.39177490234374,
+    "output_dir": "results/experiments/ablation_beta_fine/beta_0.1"
+  },
+  {
+    "beta": 0.25,
+    "best_epoch": 28,
+    "best_val_loss": 596.8627915039062,
+    "best_val_reconstruction": 543.639462890625,
+    "best_val_kl": 212.89330639648438,
+    "output_dir": "results/experiments/ablation_beta_fine/beta_0.25"
+  },
+  {
+    "beta": 0.5,
+    "best_epoch": 32,
+    "best_val_loss": 642.8032504882813,
+    "best_val_reconstruction": 558.254380859375,
+    "best_val_kl": 169.09773107910155,
+    "output_dir": "results/experiments/ablation_beta_fine/beta_0.5"
+  },
+  {
+    "beta": 0.75,
+    "best_epoch": 24,
+    "best_val_loss": 683.5830302734375,
+    "best_val_reconstruction": 576.229857421875,
+    "best_val_kl": 143.13756677246093,
+    "output_dir": "results/experiments/ablation_beta_fine/beta_0.75"
   },
   {
     "beta": 1.0,
-    "final_val_loss": 780.347833984375,
-    "final_val_reconstruction": 656.3403779296875,
-    "final_val_kl": 124.00744543457031,
-    "output_dir": "results/experiments/ablation/beta_1.0"
+    "best_epoch": 24,
+    "best_val_loss": 713.7386967773438,
+    "best_val_reconstruction": 584.3547705078125,
+    "best_val_kl": 129.38392785644533,
+    "output_dir": "results/experiments/ablation_beta_fine/beta_1.0"
   },
   {
-    "beta": 5.0,
-    "final_val_loss": 1105.632169921875,
-    "final_val_reconstruction": 821.3219418945313,
-    "final_val_kl": 56.862050048828124,
-    "output_dir": "results/experiments/ablation/beta_5.0"
+    "beta": 1.5,
+    "best_epoch": 24,
+    "best_val_loss": 771.8153383789063,
+    "best_val_reconstruction": 608.4501044921875,
+    "best_val_kl": 108.91015441894531,
+    "output_dir": "results/experiments/ablation_beta_fine/beta_1.5"
+  },
+  {
+    "beta": 2.0,
+    "best_epoch": 32,
+    "best_val_loss": 821.4780356445312,
+    "best_val_reconstruction": 618.8731088867188,
+    "best_val_kl": 101.30245880126954,
+    "output_dir": "results/experiments/ablation_beta_fine/beta_2.0"
   }
 ]

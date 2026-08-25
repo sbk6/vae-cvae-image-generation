@@ -3,22 +3,46 @@ dataset:
   image_size: [64, 64]
   channels: 3
   attributes: [Smiling, Male, Wavy_Hair]
+  sampling_strategy: balanced_conditions
   seed: 42
-  # Sous-echantillon (l'enonce le demande explicitement pour CelebA) : voir
-  # data/dataset.py pour la justification du tirage aleatoire plutot qu'un
-  # prefixe, et le README pour la justification de la taille.
-  n_train: 8000
-  n_val: 1500
-  n_test: 1500
+  # 32k = 4x le baseline 8k, tout en restant compatible avec un vrai
+  # equilibrage des 8 combinaisons d'attributs.
+  n_train: 32000
+  n_val: 3000
+  n_test: 3000
 model:
   type: vae
-  latent_dim: 64
-  hidden_channels: 32
+  # Configuration amelioree : plus de capacite pour des visages couleur que
+  # le baseline historique latent_dim=64 / hidden_channels=32.
+  latent_dim: 128
+  hidden_channels: 64
 training:
   seed: 42
   batch_size: 64
-  epochs: 18
+  # Budget long pour exploiter davantage les 32k images equilibrees.
+  epochs: 100
   lr: 0.001
-  beta: 1.0
+  # Candidat a tester apres l'ablation fine : moins fort que 1.0 pour limiter
+  # le flou MSE/KL, tout en gardant un espace latent regularise.
+  beta: 0.5
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 1.0
+    # Ne pas compter la patience pendant le warmup KL : la loss change encore
+    # de nature quand beta augmente.
+    start_after_epoch: 20
+  kl_annealing:
+    enabled: true
+    start_beta: 0.0
+    final_beta: 0.5
+    warmup_epochs: 10
   device: auto
-  output_dir: results/experiments/vae_main
+  output_dir: results/experiments/vae_improved
+mlflow:
+  enabled: true
+  tracking_uri: sqlite:///mlflow.db
+  experiment_name: blaise_celeba
+  run_name: vae_improved
+  tags:
+    stage: improved_training

@@ -3,16 +3,18 @@ dataset:
   image_size: [64, 64]
   channels: 3
   attributes: [Smiling, Male, Wavy_Hair]
+  sampling_strategy: balanced_conditions
   seed: 42
-  # Sous-ensemble plus petit que les modeles principaux, meme choix que
-  # Sylvain sur MNIST : l'ablation entraine 3 modeles complets, il faut
-  # rester dans un budget de calcul raisonnable sur CPU. Le val/test
-  # restent representatifs (1500 images) pour une mesure fiable.
-  n_train: 4000
-  n_val: 1000
-  n_test: 1000
+  # Ablation plus legere que les modeles principaux, mais deja 2x le baseline
+  # historique de 4000 images.
+  n_train: 8000
+  n_val: 2000
+  n_test: 2000
 ablation:
-  betas: [0.1, 1.0, 5.0]
+  # Grille plus fine autour de la zone utile observee dans le baseline :
+  # beta=5 degrade trop la reconstruction, beta=0.1 reconstruit bien mais
+  # regularise peu. On explore donc surtout [0.1, 1.0].
+  betas: [0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
 model:
   type: vae
   latent_dim: 64
@@ -20,7 +22,18 @@ model:
 training:
   seed: 42
   batch_size: 64
-  epochs: 10
+  epochs: 100
   lr: 0.001
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 1.0
+    start_after_epoch: 20
   device: auto
-  output_dir: results/experiments/ablation
+  output_dir: results/experiments/ablation_beta_fine
+mlflow:
+  enabled: true
+  tracking_uri: sqlite:///mlflow.db
+  experiment_name: blaise_celeba_ablation
+  tags:
+    stage: beta_ablation

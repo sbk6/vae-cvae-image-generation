@@ -2,8 +2,8 @@
 
 Pour chaque valeur de beta listee dans configs/ablation_beta.yaml, entraine un
 VAE depuis zero (meme seed, meme architecture, meme sous-echantillon, meme
-nombre d'epochs) et sauvegarde les metriques finales de validation. Genere un
-tableau Markdown et une courbe reconstruction/KL en fonction de beta.
+budget maximal d'epochs) et sauvegarde les meilleures metriques de validation.
+Genere un tableau Markdown et une courbe reconstruction/KL en fonction de beta.
 
 Structure identique a scripts/run_ablation.py (Sylvain, MNIST), pour que les
 deux etudes d'ablation se comparent directement dans le rapport final.
@@ -30,6 +30,10 @@ def run_one_beta(base_config: dict, beta: float) -> dict:
     config["training"]["beta"] = beta
     config["training"]["output_dir"] = str(Path(base_config["training"]["output_dir"]) / f"beta_{beta}")
     config["smoke_test"] = False
+    if config.get("mlflow", {}).get("enabled", False):
+        config["mlflow"]["run_name"] = f"vae_beta_{beta}"
+        config["mlflow"].setdefault("tags", {})
+        config["mlflow"]["tags"]["beta"] = str(beta)
 
     set_seed(config["training"].get("seed", 42))
     train_loader, val_loader, test_loader, dataset_info = build_dataloaders(config)
@@ -44,18 +48,20 @@ def run_one_beta(base_config: dict, beta: float) -> dict:
     train(config, model, train_loader, val_loader)
 
     log_path = Path(config["training"]["output_dir"]) / "training_log.csv"
-    last_val = None
+    best_val = None
     with open(log_path, "r", encoding="utf-8") as log_file:
         reader = csv.DictReader(log_file)
         for row in reader:
             if row["phase"] == "val":
-                last_val = row
+                if best_val is None or float(row["loss"]) < float(best_val["loss"]):
+                    best_val = row
 
     return {
         "beta": beta,
-        "final_val_loss": float(last_val["loss"]),
-        "final_val_reconstruction": float(last_val["reconstruction"]),
-        "final_val_kl": float(last_val["kl"]),
+        "best_epoch": int(best_val["epoch"]),
+        "best_val_loss": float(best_val["loss"]),
+        "best_val_reconstruction": float(best_val["reconstruction"]),
+        "best_val_kl": float(best_val["kl"]),
         "output_dir": config["training"]["output_dir"],
     }
 
@@ -71,13 +77,13 @@ def write_markdown_table(results: list, output_path: str, base_config: dict) -> 
             f"seed={base_config['training']['seed']}, "
             f"n_train={base_config['dataset']['n_train']}).\n"
         ),
-        "| beta | reconstruction (val) | KL (val) | loss totale (val) |",
-        "|---|---|---|---|",
+        "| beta | meilleure epoch | reconstruction (val) | KL (val) | loss totale (val) |",
+        "|---|---|---|---|---|",
     ]
     for result in sorted(results, key=lambda item: item["beta"]):
         lines.append(
-            f"| {result['beta']} | {result['final_val_reconstruction']:.2f} | "
-            f"{result['final_val_kl']:.2f} | {result['final_val_loss']:.2f} |"
+            f"| {result['beta']} | {result['best_epoch']} | {result['best_val_reconstruction']:.2f} | "
+            f"{result['best_val_kl']:.2f} | {result['best_val_loss']:.2f} |"
         )
     lines.append("")
     lines.append(
@@ -95,8 +101,8 @@ def write_markdown_table(results: list, output_path: str, base_config: dict) -> 
 def plot_curve(results: list, output_path: str) -> None:
     results_sorted = sorted(results, key=lambda item: item["beta"])
     betas = [item["beta"] for item in results_sorted]
-    recon = [item["final_val_reconstruction"] for item in results_sorted]
-    kl = [item["final_val_kl"] for item in results_sorted]
+    recon = [item["best_val_reconstruction"] for item in results_sorted]
+    kl = [item["best_val_kl"] for item in results_sorted]
 
     fig, ax1 = plt.subplots(figsize=(6, 4))
     color1 = "tab:blue"
