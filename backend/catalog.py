@@ -284,8 +284,13 @@ def _celeba_models(experiments_dir: Path = CELEBA_EXPERIMENTS_DIR) -> List[Model
         is_ablation_run = run_name.startswith("beta_")
         kind = "CVAE" if conditional else "VAE"
         label = f"{kind} β = {beta:g}" if beta is not None else f"{kind} ({run_name})"
+        # Deux etats du meme run se distinguent par leur epoch, pas par beta :
+        # sans cette precision, le selecteur afficherait deux entrees identiques.
+        epoch = metadata.get("epoch")
         if is_last:
-            label += " · dernière epoch"
+            label += f" · dernière epoch ({epoch})" if epoch else " · dernière epoch"
+        elif epoch is not None:
+            label += f" · meilleure validation (epoch {epoch})"
 
         entries.append(
             ModelEntry(
