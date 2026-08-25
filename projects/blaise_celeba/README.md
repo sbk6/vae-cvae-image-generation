@@ -469,6 +469,9 @@ pilote par les donnees du catalogue) :
 MLflow est active par defaut dans les configs (`mlflow.enabled: true`). Les
 runs sont stockes localement dans une base SQLite
 `projects/blaise_celeba/mlflow.db` via `tracking_uri: sqlite:///mlflow.db`.
+Cette URI est resolue par le code par rapport au dossier `projects/blaise_celeba`,
+pour eviter d'ecrire dans le registre MLflow de l'application si la commande
+est lancee depuis la racine du depot.
 
 Chaque entrainement logge :
 
