@@ -261,7 +261,15 @@ def _celeba_models(experiments_dir: Path = CELEBA_EXPERIMENTS_DIR) -> List[Model
 
         conditional = metadata.get("model_type") == "cvae"
         beta = metadata.get("beta")
-        run_name = checkpoint.parent.name  # "vae_main", "cvae_main", "beta_0.1", ...
+        run_name = checkpoint.parent.name
+
+        # Un run d'ablation est reconnu a son nom de dossier, produit par
+        # run_ablation.py sous la forme `beta_<valeur>`. On ne peut pas se
+        # fier a une liste de noms de runs principaux : ils changent au gre
+        # des protocoles d'entrainement (vae_main est devenu vae_improved),
+        # et un run principal non reconnu serait classe "ablation", donc
+        # absent des quatre ecrans qui filtrent sur family == "main".
+        is_ablation_run = run_name.startswith("beta_")
         kind = "CVAE" if conditional else "VAE"
         label = f"{kind} β = {beta:g}" if beta is not None else f"{kind} ({run_name})"
 
@@ -276,14 +284,15 @@ def _celeba_models(experiments_dir: Path = CELEBA_EXPERIMENTS_DIR) -> List[Model
                 ),
                 loader="blaise_celeba",
                 checkpoint_path=checkpoint,
-                family="main" if run_name in ("vae_main", "cvae_main") else "ablation",
+                family="ablation" if is_ablation_run else "main",
                 beta=beta,
                 conditional=conditional,
-                # Seuls les runs d'ablation forment la serie comparable entre
-                # eux (meme sous-echantillon de 4000 images, memes 10 epochs).
-                # vae_main utilise 8000 images et 18 epochs : pas comparable,
-                # meme remarque que pour MNIST (voir _mnist_models).
-                ablation_series="vae" if run_name.startswith("beta_") else None,
+                # Seuls les runs d'ablation forment une serie comparable entre
+                # eux : ils partagent reglages et sous-echantillon, seul beta
+                # varie. Les runs principaux sont entraines plus longtemps sur
+                # plus d'images et ne leur sont pas comparables — meme remarque
+                # que pour MNIST (voir _mnist_models).
+                ablation_series=("cvae" if conditional else "vae") if is_ablation_run else None,
             )
         )
     return entries
