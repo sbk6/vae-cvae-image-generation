@@ -1,0 +1,58 @@
+# Demonstration VAE / CVAE — un seul service.
+#
+# Le frontend React est buildé puis servi par l'API sur le meme port : il n'y a
+# donc rien a orchestrer entre plusieurs conteneurs. Ce fichier existe pour ce
+# qu'un `docker run` gere mal — politique de redemarrage, volumes, sonde de
+# sante — et pour tenir la promesse d'une commande unique :
+#
+#     docker compose up -d --build
+#
+# Les poids CelebA ne sont pas dans le depot (100 Mo par fichier). Pour les
+# servir, pointer CELEBA_CHECKPOINTS vers le dossier qui les contient :
+#
+#     CELEBA_CHECKPOINTS=~/celeba docker compose up -d
+#     docker compose exec demo python scripts/register_models.py --dataset celeba
+#     docker compose restart demo
+
+services:
+  demo:
+    build:
+      context: .
+    image: vae-cvae-demo
+    container_name: vae-demo
+    restart: unless-stopped
+
+    ports:
+      # Ecoute uniquement en local : sur un VPS, c'est le reverse proxy qui
+      # expose le service. Publier sur 0.0.0.0 contournerait UFW, qui ne filtre
+      # pas les regles creees par Docker.
+      - "127.0.0.1:8000:8000"
+
+    volumes:
+      # Base MLflow et artefacts vivent dans le meme dossier, donc un seul
+      # volume suffit. Sur un volume nomme vide, Docker recopie d'abord le
+      # contenu de l'image : le registre construit au build est conserve, et
+      # tout enregistrement ulterieur lui survit.
+      - mlflow-store:/app/mlflow-store
+
+      # Checkpoints CelebA, absents du depot. Le defaut pointe vers le dossier
+      # attendu dans l'arborescence ; s'il est vide, le dataset est simplement
+      # annonce sans modele.
+      - ${CELEBA_CHECKPOINTS:-./projects/blaise_celeba/results/experiments/cvae_improved}:/app/projects/blaise_celeba/results/experiments/cvae_improved:ro
+
+    healthcheck:
+      # urllib plutot que curl : l'image python:slim n'embarque pas curl.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health').read()
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Le premier chargement MLflow prend une dizaine de secondes : sans ce
+      # delai de grace, le conteneur serait declare malsain au demarrage.
+      start_period: 90s
+
+volumes:
+  mlflow-store:

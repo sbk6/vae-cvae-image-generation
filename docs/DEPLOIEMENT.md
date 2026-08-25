@@ -139,55 +139,44 @@ find reports/experiments projects -name "*.pth" -o -name "*.pt" | grep -v packag
 Sept fichiers doivent apparaître. S'il n'y en a aucun, le dépôt a été cloné en
 shallow partiel : recloner sans option.
 
-### 4.2 Construire
+### 4.2 Construire et lancer
+
+Une seule commande :
 
 ```bash
-docker build -t vae-demo .
+docker compose up -d --build
 ```
 
-Compter 5 à 15 minutes selon la bande passante. L'étape lente est
-`pip install torch`.
+Compter 5 à 15 minutes au premier build, selon la bande passante. L'étape lente
+est `pip install torch`. Les builds suivants réutilisent le cache Docker et
+prennent moins d'une minute si seul le code a changé.
 
 ### 4.3 Vérifier que le registre MLflow a bien été peuplé
 
 **Étape à ne pas sauter.** Le Dockerfile tolère volontairement l'échec de
-l'enregistrement pour que le build aboutisse quand même. Sans cette
-vérification, on obtiendrait une image qui démarre normalement mais ne sert
-aucun modèle — une panne silencieuse.
+l'enregistrement pour qu'une image reste constructible même sans checkpoint.
+Sans cette vérification, on obtiendrait une image qui démarre normalement mais
+ne sert aucun modèle — une panne silencieuse.
 
 ```bash
-docker run --rm vae-demo python -c "
-from backend.mlflow_registry import RegistryGateway
-noms = RegistryGateway().available_names()
-print(len(noms), 'modeles enregistres')
-[print(' ', n) for n in noms]
-"
+docker compose exec demo python scripts/register_models.py --verify
 ```
 
-Sortie attendue : **7 modèles**. Si la sortie affiche `0`, voir §8.
+Sortie attendue : **7 modèles**, un par ligne. La commande sort en code 1 si le
+registre est vide, elle est donc utilisable dans un script.
+
+Si la sortie affiche `0`, voir §9.
 
 ---
 
-## 5. Lancer
+## 5. Vérifier que tout tourne
 
 ```bash
-docker run -d \
-  --name vae-demo \
-  --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 \
-  vae-demo
+docker compose ps
 ```
 
-Deux options importantes :
-
-- `--restart unless-stopped` : le container repart tout seul après un
-  redémarrage du VPS.
-- `-p 127.0.0.1:8000:8000` et non `-p 8000:8000` : le container n'est joignable
-  que localement, le reverse proxy s'occupe de l'exposition publique. Publier
-  directement le port contournerait le pare-feu UFW, qui ne filtre pas les
-  règles créées par Docker.
-
-### Vérifier
+Le service doit apparaître en `running` et, après une minute environ, en
+`healthy` — la sonde de santé interroge `/api/health`.
 
 ```bash
 curl -s http://127.0.0.1:8000/api/health | python3 -m json.tool
@@ -208,6 +197,18 @@ Réponse attendue :
 Laisser une trentaine de secondes après le lancement avant de tester :
 l'application précharge un modèle en arrière-plan au démarrage.
 
+### Ce que le fichier compose met en place
+
+| | |
+|---|---|
+| `restart: unless-stopped` | le service repart après un redémarrage du VPS |
+| `127.0.0.1:8000` | le container n'est joignable que localement ; c'est le reverse proxy qui expose |
+| volume `mlflow-store` | la base MLflow et ses artefacts survivent aux recréations du container |
+| `healthcheck` | état visible dans `docker compose ps`, avec 90 s de grâce au démarrage |
+
+Le port n'est **pas** publié sur `0.0.0.0` : Docker écrit ses propres règles
+iptables et contournerait UFW, exposant le service malgré le pare-feu.
+
 ---
 
 ## 6. Mettre à jour après un nouveau commit
@@ -215,10 +216,8 @@ l'application précharge un modèle en arrière-plan au démarrage.
 ```bash
 cd ~/vae-cvae-image-generation
 git pull
-docker build -t vae-demo .
-docker rm -f vae-demo
-docker run -d --name vae-demo --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 vae-demo
+docker compose up -d --build
+docker compose exec demo python scripts/register_models.py --verify
 ```
 
 Pour éviter de retaper la séquence, créer `~/deploy.sh` :
@@ -229,39 +228,25 @@ set -euo pipefail
 
 cd ~/vae-cvae-image-generation
 git pull
+docker compose up -d --build
 
-docker build -t vae-demo .
+echo "Attente du demarrage..."
+sleep 20
 
 # Verification bloquante : une image sans registre demarre sans rien servir.
-docker run --rm vae-demo python -c "
-from backend.mlflow_registry import RegistryGateway
-n = len(RegistryGateway().available_names())
-print(n, 'modeles enregistres')
-assert n >= 7, 'Registre incomplet, deploiement interrompu'
-"
+docker compose exec -T demo python scripts/register_models.py --verify
 
-docker rm -f vae-demo 2>/dev/null || true
-docker run -d --name vae-demo --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 vae-demo
-
-echo "Attente de l'API..."
-for i in $(seq 1 30); do
-  if curl -sf http://127.0.0.1:8000/api/health > /dev/null; then
-    echo "En ligne."
-    exit 0
-  fi
-  sleep 2
-done
-
-echo "L'API n'a pas repondu en 60 s. Journaux :"
-docker logs --tail 40 vae-demo
-exit 1
+echo "Deploiement termine."
+docker compose ps
 ```
 
 ```bash
 chmod +x ~/deploy.sh
 ~/deploy.sh
 ```
+
+`-T` désactive l'allocation d'un pseudo-terminal, nécessaire pour que la
+commande fonctionne depuis un script non interactif.
 
 Nettoyer les anciennes images de temps en temps, elles pèsent 1,4 Go pièce :
 
@@ -274,54 +259,51 @@ docker image prune -f
 ## 7. Ajouter les modèles CelebA
 
 Les poids CelebA ne sont pas dans le dépôt — 100 Mo par fichier, au-dessus de
-la limite GitHub. Ils doivent être copiés sur le VPS et enregistrés à la main.
-
-Le registre MLflow étant construit au build, il faut **le persister sur un
-volume** pour que l'enregistrement survive à un redémarrage.
+la limite GitHub. Ils doivent être copiés sur le VPS puis enregistrés.
 
 ### 7.1 Copier les poids
 
 Depuis votre machine :
 
 ```bash
+ssh utilisateur@IP_DU_VPS "mkdir -p ~/celeba"
 scp best_checkpoint.pth utilisateur@IP_DU_VPS:~/celeba/
 ```
 
-### 7.2 Relancer avec les volumes
+### 7.2 Pointer le compose vers ce dossier
+
+Créer un fichier `.env` à côté du `docker-compose.yml` :
 
 ```bash
-docker volume create vae-mlflow
-
-docker rm -f vae-demo 2>/dev/null || true
-
-docker run -d \
-  --name vae-demo \
-  --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 \
-  -v ~/celeba:/app/projects/blaise_celeba/results/experiments/cvae_improved:ro \
-  -v vae-mlflow:/app/mlartifacts \
-  vae-demo
+cd ~/vae-cvae-image-generation
+echo "CELEBA_CHECKPOINTS=/home/utilisateur/celeba" > .env
+docker compose up -d
 ```
+
+Un chemin **absolu** : le `.env` est lu depuis le dossier du projet, et `~`
+n'y est pas développé.
 
 ### 7.3 Enregistrer
 
 ```bash
-docker exec vae-demo python scripts/register_models.py --dataset celeba
-docker restart vae-demo
+docker compose exec demo python scripts/register_models.py --dataset celeba
+docker compose restart demo
 ```
 
 Le redémarrage est nécessaire : le catalogue est construit au démarrage de
 l'application.
 
-Vérifier :
+L'enregistrement est écrit dans le volume `mlflow-store`, il survit donc aux
+`docker compose up` suivants. Il serait en revanche perdu par un
+`docker compose down -v`, qui supprime les volumes.
+
+### 7.4 Vérifier
 
 ```bash
 curl -s http://127.0.0.1:8000/api/datasets | python3 -m json.tool
 ```
 
 `celeba` doit apparaître avec `model_count` supérieur à zéro.
-
----
 
 ## 8. Exposer publiquement — Nginx et HTTPS
 
@@ -397,23 +379,20 @@ sudo certbot renew --dry-run
 ### L'API répond mais aucun modèle n'est servi
 
 ```bash
-docker exec vae-demo python -c "
-from backend.mlflow_registry import RegistryGateway, is_registry_available
-print('registre present :', is_registry_available())
-print('modeles :', RegistryGateway().available_names())
-"
+docker compose exec demo python scripts/register_models.py --verify
 ```
 
 Si la liste est vide, l'enregistrement a échoué au build. Le refaire dans le
 container en marche :
 
 ```bash
-docker exec vae-demo python scripts/register_models.py
-docker restart vae-demo
+docker compose exec demo python scripts/register_models.py
+docker compose restart demo
 ```
 
-Attention : sans volume sur `/app/mlartifacts`, cet enregistrement est perdu au
-prochain `docker run`. Reconstruire l'image proprement est préférable.
+L'enregistrement est écrit dans le volume `mlflow-store`, il survit donc aux
+redémarrages. Vérifier tout de même pourquoi le build a échoué : les journaux
+de build affichent le message « Aucun modele enregistre au build ».
 
 ### Le build échoue pendant `pip install torch`
 
@@ -433,15 +412,26 @@ modèle. Attendre une trentaine de secondes après le lancement avant de tester.
 ### Journaux et ressources
 
 ```bash
-docker logs -f vae-demo
+docker compose logs -f
+docker compose ps            # etat et sante du service
 docker stats vae-demo        # memoire et CPU en direct
 ```
 
 ### Redémarrage complet
 
 ```bash
-docker restart vae-demo
+docker compose restart demo
 ```
+
+Repartir de zéro en conservant les modèles enregistrés :
+
+```bash
+docker compose down
+docker compose up -d --build
+```
+
+`docker compose down -v` supprimerait aussi le volume, donc tout enregistrement
+fait à chaud (CelebA notamment).
 
 ---
 
@@ -458,9 +448,8 @@ résultats à la place.
 reconstruire l'image, soit de réenregistrer dans le container avec un volume
 persistant.
 
-**Pas de `docker-compose.yml`.** Un seul service, donc pas indispensable —
-mais l'énoncé du cours attend `docker compose up --build` comme commande
-unique. À ajouter avant le rendu.
+**Le VAE CelebA manque.** Seul le CVAE a été livré, donc l'écran
+Reconstruction ne peut pas comparer les deux modèles sur ce dataset.
 
 ---
 
@@ -471,11 +460,17 @@ réelles prises sur l'application. En revanche, **le build complet depuis un
 clone frais n'a pas pu être rejoué** : le daemon Docker de la machine de
 rédaction a cessé de répondre pendant la vérification.
 
-Deux points à confirmer au premier déploiement :
+Le fichier `docker-compose.yml` a en revanche été validé par
+`docker compose config`, qui résout et contrôle sa syntaxe sans lancer de
+conteneur.
+
+Trois points à confirmer au premier déploiement :
 
 1. l'étape `RUN python scripts/register_models.py` du Dockerfile aboutit bien
    dans le contexte du build — le §4.3 la vérifie explicitement ;
-2. la taille finale de l'image, estimée à ~1,4 Go et mesurée à 1,33 Go avant
+2. le volume `mlflow-store` est bien alimenté depuis l'image au premier
+   démarrage, comportement standard des volumes nommés mais non rejoué ici ;
+3. la taille finale de l'image, estimée à ~1,4 Go et mesurée à 1,33 Go avant
    l'ajout de l'étape d'enregistrement MLflow.
 
 ```bash

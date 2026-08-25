@@ -1,6 +1,6 @@
-# Image unique servant l'API Flask ET le frontend React buildé sur le meme
-# port. Un seul container : moins de pieces mobiles le jour de la demo qu'un
-# docker-compose a deux services.
+# Image unique servant l'API FastAPI ET le frontend React buildé sur le meme
+# port. Un seul service, donc rien a orchestrer entre conteneurs ; le fichier
+# docker-compose.yml se charge du reste (redemarrage, volumes, sonde).
 
 # ---------------------------------------------------------------- frontend
 FROM node:20-alpine AS frontend-build
@@ -59,10 +59,19 @@ COPY reports/experiments/ ./reports/experiments/
 # Build React produit a l'etape precedente
 COPY --from=frontend-build /build/dist ./frontend/dist
 
+# Base MLflow et artefacts regroupes dans un seul dossier, pour qu'un unique
+# volume suffise a les persister. Monter les artefacts sans la base laisserait
+# un registre incoherent : des fichiers presents, mais plus aucun modele connu.
+ENV MLFLOW_STORE_DIR=/app/mlflow-store
+
 # Le Model Registry est construit au build plutot qu'au demarrage : toute
 # l'inference passe par MLflow, un container sans registre ne servirait rien.
 # Les modeles sans checkpoint present sont simplement ignores.
-RUN python scripts/register_models.py ||     echo "Aucun modele enregistre au build : le container demarrera degrade."
+#
+# L'echec est tolere pour qu'une image reste constructible sans checkpoint,
+# mais il produit alors une image qui demarre sans rien servir : verifier le
+# nombre de modeles enregistres apres le build (voir docs/DEPLOIEMENT.md).
+RUN python scripts/register_models.py     || echo "Aucun modele enregistre au build : le container demarrera degrade."
 
 EXPOSE 8000
 

@@ -68,23 +68,31 @@ demo: fixtures register
 	npm run build --prefix frontend
 	python -m backend.app --port 8000
 
-# --- Demonstration dockerisee : un seul container ---
+# --- Demonstration dockerisee ---
 
-docker-build:
-	docker build -t vae-cvae-demo .
+# Tout en une commande : build de l'image puis demarrage du service.
+docker-up:
+	docker compose up -d --build
+	@echo "Demo sur http://localhost:8000 — documentation d'API sur /docs"
 
-docker-run:
-	docker run --rm -p 8000:8000 vae-cvae-demo
+docker-down:
+	docker compose down
 
-# Variante montant les checkpoints Fashion-MNIST depuis l'hote : permet de
-# remplacer les poids de David sans reconstruire l'image.
-docker-run-mounted:
-	docker run --rm -p 8000:8000 \
-	  -v "$(CURDIR)/projects/david_fashion_mnist/checkpoints:/app/projects/david_fashion_mnist/checkpoints:ro" \
-	  vae-cvae-demo
+docker-logs:
+	docker compose logs -f
 
-docker-demo: docker-build docker-run
+# A lancer apres chaque build : le Dockerfile tolere l'echec de
+# l'enregistrement MLflow, ce qui peut produire une image qui demarre sans
+# servir aucun modele.
+docker-check:
+	docker compose run --rm --no-deps demo python scripts/register_models.py --verify
+
+# Enregistre les checkpoints CelebA deposes via le volume, puis redemarre pour
+# que le catalogue les prenne en compte.
+docker-register-celeba:
+	docker compose exec demo python scripts/register_models.py --dataset celeba
+	docker compose restart demo
 
 .PHONY: install train-vae train-cvae ablation evaluate test lint clean \
         install-demo fixtures register register-list mlflow-ui dev-api dev-web demo \
-        docker-build docker-run docker-run-mounted docker-demo
+        docker-up docker-down docker-logs docker-check docker-register-celeba

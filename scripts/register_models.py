@@ -197,8 +197,31 @@ def main() -> None:
     )
     parser.add_argument("--dataset", help="Ne traiter qu'un dataset (mnist, fashion_mnist, celeba)")
     parser.add_argument("--model", help="Ne traiter qu'un modele, par son identifiant de catalogue")
-    parser.add_argument("--list", action="store_true", help="Lister les modeles sans rien enregistrer")
+    parser.add_argument("--list", action="store_true", help="Lister les checkpoints du catalogue, sans rien enregistrer")
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Verifier ce que contient le Model Registry ; code de sortie 1 s'il est vide",
+    )
     args = parser.parse_args()
+
+    if args.verify:
+        # Interroge le Registry, pas le catalogue : c'est bien ce que sert
+        # l'application, et le seul etat qui compte apres un build.
+        from backend.mlflow_registry import RegistryGateway, is_registry_available
+
+        if not is_registry_available():
+            print("Aucun store MLflow. Lancer : python scripts/register_models.py")
+            raise SystemExit(1)
+
+        noms = RegistryGateway().available_names()
+        print(f"{len(noms)} modele(s) dans le Model Registry :")
+        for nom in noms:
+            print(f"  {nom}")
+        if not noms:
+            print("Registre vide : l'application demarrera sans servir aucun modele.")
+            raise SystemExit(1)
+        return
 
     catalog = Catalog(device="cpu")
 

@@ -17,6 +17,7 @@ Deux stores MLflow coexistent volontairement dans le depot :
 """
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -26,8 +27,18 @@ from mlflow.tracking import MlflowClient
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
-MLFLOW_DB_PATH = ROOT_DIR / "mlflow.db"
-MLFLOW_ARTIFACT_DIR = ROOT_DIR / "mlartifacts"
+# Emplacement du store MLflow. La base et les artefacts doivent vivre dans un
+# meme dossier pour pouvoir etre montes sur un unique volume : monter les
+# artefacts sans la base laisserait un registre qui referme des chemins
+# existants mais ne connait plus aucun modele.
+#
+# En local, les deux restent a la racine du depot pour ne rien changer aux
+# habitudes ; en conteneur, MLFLOW_STORE_DIR les regroupe (voir Dockerfile).
+_STORE_DIR = os.environ.get("MLFLOW_STORE_DIR")
+MLFLOW_STORE_DIR = Path(_STORE_DIR) if _STORE_DIR else ROOT_DIR
+
+MLFLOW_DB_PATH = MLFLOW_STORE_DIR / "mlflow.db"
+MLFLOW_ARTIFACT_DIR = MLFLOW_STORE_DIR / "mlartifacts"
 EXPERIMENT_NAME = "vae_demo_app"
 
 
@@ -39,6 +50,7 @@ def tracking_uri() -> str:
 def configure_tracking() -> str:
     """Pointe MLflow vers le store de l'application et garantit l'experience."""
     uri = tracking_uri()
+    MLFLOW_STORE_DIR.mkdir(parents=True, exist_ok=True)
     mlflow.set_tracking_uri(uri)
     MLFLOW_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 

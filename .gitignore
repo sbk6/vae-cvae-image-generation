@@ -40,3 +40,7 @@ Thumbs.db
 /mlflow.db-*
 /mlartifacts/
 /mlruns/
+
+# Configuration locale de deploiement : chemins propres a chaque machine
+# (emplacement des checkpoints CelebA, notamment). Voir docs/DEPLOIEMENT.md.
+/.env
