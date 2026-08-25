@@ -9,6 +9,28 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 
+PROJECT_DIR = Path(__file__).resolve().parent
+
+
+def resolve_tracking_uri(tracking_uri: str) -> str:
+    """Ancre les URI SQLite relatives au dossier du sous-projet.
+
+    `sqlite:///mlflow.db` depend normalement du repertoire courant. Ici, on
+    veut toujours viser `projects/blaise_celeba/mlflow.db`, meme si le script
+    est lance depuis la racine du depot.
+    """
+    sqlite_prefix = "sqlite:///"
+    if (
+        tracking_uri.startswith(sqlite_prefix)
+        and not tracking_uri.startswith("sqlite:////")
+        and tracking_uri != "sqlite:///:memory:"
+    ):
+        db_path = Path(tracking_uri[len(sqlite_prefix) :])
+        if not db_path.is_absolute():
+            return f"{sqlite_prefix}{(PROJECT_DIR / db_path).as_posix()}"
+    return tracking_uri
+
+
 def flatten_dict(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
     """Aplatit une config imbriquee pour `mlflow.log_params`.
 
@@ -53,7 +75,7 @@ class MLflowLogger:
         self.mlflow = mlflow
         tracking_uri = mlflow_cfg.get("tracking_uri")
         if tracking_uri:
-            mlflow.set_tracking_uri(tracking_uri)
+            mlflow.set_tracking_uri(resolve_tracking_uri(tracking_uri))
 
         experiment_name = mlflow_cfg.get("experiment_name", "blaise_celeba")
         mlflow.set_experiment(experiment_name)

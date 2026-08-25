@@ -533,6 +533,9 @@ Pour chaque run, on enregistre :
 
 Concretement, le bloc `mlflow` des fichiers YAML active ce suivi. Le stockage
 est local (`sqlite:///mlflow.db`), donc il ne depend pas d'un serveur externe.
+Dans le code, cette URI relative est resolue par rapport a
+`projects/blaise_celeba` pour eviter d'ecrire dans la base MLflow de
+l'application quand une commande est lancee depuis la racine du depot.
 Pour voir les runs, on lance simplement
 `mlflow ui --backend-store-uri sqlite:///mlflow.db` depuis
 `projects/blaise_celeba/`.
