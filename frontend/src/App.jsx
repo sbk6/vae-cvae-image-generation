@@ -19,7 +19,10 @@ export default function App() {
   const [health, setHealth] = useState(null)
   const [datasets, setDatasets] = useState([])
   const [datasetId, setDatasetId] = useState(null)
-  const [models, setModels] = useState([])
+  // Les modeles sont memorises avec le dataset auquel ils appartiennent :
+  // pendant un changement de dataset, l'ancienne liste ne doit jamais etre
+  // servie a la nouvelle vue, sous peine de requetes croisees.
+  const [modelState, setModelState] = useState({ datasetId: null, models: [] })
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('generate')
@@ -39,12 +42,12 @@ export default function App() {
   // identifiants sont namespacés (mnist/…, fashion/…) et ne se mélangent pas.
   useEffect(() => {
     if (!datasetId) return
-    setModels([])
     getModels(datasetId)
-      .then((payload) => setModels(payload.models))
+      .then((payload) => setModelState({ datasetId, models: payload.models }))
       .catch((err) => setError(err.message))
   }, [datasetId])
 
+  const models = modelState.datasetId === datasetId ? modelState.models : []
   const dataset = datasets.find((item) => item.id === datasetId)
   const ActiveComponent = TABS.find((tab) => tab.id === activeTab)?.component
   // Un dataset sans poids reste consultable : ses métriques et ses images

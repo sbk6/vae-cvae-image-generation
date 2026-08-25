@@ -14,6 +14,17 @@ export default function InterpolateView({ dataset, models }) {
   const mainModels = models.filter((model) => model.family === 'main')
   const usable = mainModels.length > 0 ? mainModels : models
   const [modelId, setModelId] = useState(usable[0]?.id)
+
+  // `models` arrive apres le montage et change avec le dataset. Sans ce
+  // rattrapage, l'identifiant fige a l'initialisation resterait celui du
+  // dataset precedent, et la vue interrogerait le mauvais modele.
+  useEffect(() => {
+    const main = models.filter((model) => model.family === 'main')
+    const pool = main.length > 0 ? main : models
+    if (pool.length > 0 && !pool.some((model) => model.id === modelId)) {
+      setModelId(pool[0]?.id)
+    }
+  }, [models, modelId])
   const [fixtures, setFixtures] = useState(null)
   const [sourceIndex, setSourceIndex] = useState(null)
   const [targetIndex, setTargetIndex] = useState(null)

@@ -13,6 +13,17 @@ export default function GenerateView({ dataset, models }) {
   const mainModels = models.filter((model) => model.family === 'main')
   const usable = mainModels.length > 0 ? mainModels : models
   const [modelId, setModelId] = useState(usable.find((m) => m.conditional)?.id || usable[0]?.id)
+
+  // `models` arrive apres le montage et change avec le dataset. Sans ce
+  // rattrapage, l'identifiant fige a l'initialisation resterait celui du
+  // dataset precedent, et la vue interrogerait le mauvais modele.
+  useEffect(() => {
+    const main = models.filter((model) => model.family === 'main')
+    const pool = main.length > 0 ? main : models
+    if (pool.length > 0 && !pool.some((model) => model.id === modelId)) {
+      setModelId(pool.find((model) => model.conditional)?.id || pool[0]?.id)
+    }
+  }, [models, modelId])
   const [classLabel, setClassLabel] = useState(0)
   const [count, setCount] = useState(16)
   const [images, setImages] = useState([])
