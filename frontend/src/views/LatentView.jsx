@@ -7,6 +7,7 @@ import {
   FixturePicker,
   ModelSelect,
   Notice,
+  NoWeightsNotice,
 } from '../components.jsx'
 
 const RANGE = 3.5 // ~3 ecarts-types : au-dela on sort du support de la prior
@@ -77,6 +78,23 @@ export default function LatentView({ dataset, models }) {
       next[index] = value
       return next
     })
+  }
+
+  // Tous les hooks ci-dessus sont appeles inconditionnellement : React
+  // interdit qu'un rendu en execute un nombre different du precedent, et
+  // `models` passe de vide a rempli des que l'API repond.
+  // Sans poids enregistres, cet ecran n'a rien a produire. On l'annonce
+  // au lieu d'afficher des controles inertes.
+  if (models.length === 0) {
+    return (
+      <div className="card">
+        <h2 className="mb-1 text-[17px] font-semibold">Exploration de l'espace latent</h2>
+        <p className="mb-5 text-[13.5px] text-dim">
+          Cet écran génère des images en direct : il lui faut au moins un modèle chargé.
+        </p>
+        <NoWeightsNotice dataset={dataset} />
+      </div>
+    )
   }
 
   const randomize = () => setZ(Array.from({ length: latentDim }, () => gaussian()))

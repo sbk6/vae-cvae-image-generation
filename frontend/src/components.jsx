@@ -157,6 +157,26 @@ export function DataTable({ headers, children }) {
   )
 }
 
+// Affiché quand un dataset est annoncé par l'API mais qu'aucun poids n'est
+// encore enregistré : son auteur a livré son code, ses images et ses
+// résultats, seuls les checkpoints manquent.
+export function NoWeightsNotice({ dataset, children }) {
+  return (
+    <Notice kind="warn">
+      <strong>Aucun modèle {dataset.label} n'est encore chargé.</strong> Le code
+      d'intégration, les images réelles et les résultats d'évaluation sont en place —
+      il ne manque que les poids entraînés.
+      <br />
+      <br />
+      Déposer un <code className="font-mono">best_checkpoint.pth</code> dans le
+      sous-projet, puis lancer{' '}
+      <code className="font-mono">python scripts/register_models.py</code>. Un seul
+      fichier suffit à activer cet écran.
+      {children}
+    </Notice>
+  )
+}
+
 export function formatNumber(value, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(value)) return '—'
   return Number(value).toFixed(digits)

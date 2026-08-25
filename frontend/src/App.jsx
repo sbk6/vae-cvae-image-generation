@@ -47,7 +47,9 @@ export default function App() {
 
   const dataset = datasets.find((item) => item.id === datasetId)
   const ActiveComponent = TABS.find((tab) => tab.id === activeTab)?.component
-  const ready = !loading && !error && dataset && models.length > 0
+  // Un dataset sans poids reste consultable : ses métriques et ses images
+  // réelles sont servies, seuls les écrans de génération sont inertes.
+  const ready = !loading && !error && Boolean(dataset)
   const unregistered = models.filter((model) => model.registered === false)
 
   return (
@@ -125,9 +127,6 @@ export default function App() {
         />
       )}
       {loading && <div className="card text-dim">Chargement des modèles…</div>}
-      {!loading && !error && models.length === 0 && (
-        <div className="card text-dim">Aucun modèle disponible pour ce dataset.</div>
-      )}
     </div>
   )
 }

@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import { compareAblation, getMetrics } from '../api.js'
-import { ClassSelector, DataTable, DigitImage, Field, Notice, formatNumber } from '../components.jsx'
+import {
+  ClassSelector,
+  DataTable,
+  DigitImage,
+  Field,
+  Notice,
+  NoWeightsNotice,
+  formatNumber,
+} from '../components.jsx'
 
-export default function AblationView({ dataset }) {
+export default function AblationView({ dataset, models }) {
   const [results, setResults] = useState([])
   const [series, setSeries] = useState(null)
   const [availableSeries, setAvailableSeries] = useState([])
@@ -49,6 +57,8 @@ export default function AblationView({ dataset }) {
     getMetrics(dataset.id).then(setMetrics).catch(() => setMetrics(null))
   }, [draw, dataset.id])
 
+  const noWeights = models.length === 0
+
   const ablation = metrics?.ablation
   const evaluation = metrics?.evaluation
   const conditional = series === 'cvae'
@@ -62,7 +72,9 @@ export default function AblationView({ dataset }) {
           écart visible vient uniquement de β.
         </p>
 
-        <div className="mb-5 flex flex-wrap items-end gap-5">
+        {noWeights && <NoWeightsNotice dataset={dataset} />}
+
+        <div className={`mb-5 flex flex-wrap items-end gap-5 ${noWeights ? 'hidden' : ''}`}>
           <button
             className="btn"
             onClick={() => draw(series, conditional ? classLabel : undefined)}
@@ -147,9 +159,9 @@ export default function AblationView({ dataset }) {
             {ablation.map((row) => (
               <tr key={row.beta}>
                 <td className="font-mono">{row.beta}</td>
-                <td className="num">{formatNumber(row.final_val_loss)}</td>
-                <td className="num">{formatNumber(row.final_val_reconstruction)}</td>
-                <td className="num">{formatNumber(row.final_val_kl)}</td>
+                <td className="num">{formatNumber(row.val_loss)}</td>
+                <td className="num">{formatNumber(row.val_reconstruction)}</td>
+                <td className="num">{formatNumber(row.val_kl)}</td>
               </tr>
             ))}
           </DataTable>

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { sampleImages } from '../api.js'
-import { ClassSelector, DigitImage, Field, ModelSelect, Notice } from '../components.jsx'
+import {
+  ClassSelector,
+  DigitImage,
+  Field,
+  ModelSelect,
+  Notice,
+  NoWeightsNotice,
+} from '../components.jsx'
 
 export default function GenerateView({ dataset, models }) {
   const mainModels = models.filter((model) => model.family === 'main')
@@ -32,6 +39,23 @@ export default function GenerateView({ dataset, models }) {
   useEffect(() => {
     run()
   }, [run])
+
+  // Tous les hooks ci-dessus sont appeles inconditionnellement : React
+  // interdit qu'un rendu en execute un nombre different du precedent, et
+  // `models` passe de vide a rempli des que l'API repond.
+  // Sans poids enregistres, cet ecran n'a rien a produire. On l'annonce
+  // au lieu d'afficher des controles inertes.
+  if (models.length === 0) {
+    return (
+      <div className="card">
+        <h2 className="mb-1 text-[17px] font-semibold">Génération à partir de la prior</h2>
+        <p className="mb-5 text-[13.5px] text-dim">
+          Cet écran génère des images en direct : il lui faut au moins un modèle chargé.
+        </p>
+        <NoWeightsNotice dataset={dataset} />
+      </div>
+    )
+  }
 
   const columns = Math.min(count, 8)
 

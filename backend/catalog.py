@@ -251,7 +251,15 @@ def _celeba_models(experiments_dir: Path = CELEBA_EXPERIMENTS_DIR) -> List[Model
         return []
 
     entries: List[ModelEntry] = []
-    for checkpoint in sorted(experiments_dir.rglob("best_checkpoint.pth")):
+    # `best_checkpoint.pth` est l'etat retenu par la validation, `last_checkpoint.pth`
+    # celui de la derniere epoch. Les deux sont exposes quand ils coexistent : sur
+    # CelebA le meilleur a ete trouve pendant le warmup KL, donc tres tot, et
+    # comparer les deux est instructif plutot que trompeur — a condition que le
+    # libelle dise lequel est lequel.
+    candidates = sorted(experiments_dir.rglob("best_checkpoint.pth")) + sorted(
+        experiments_dir.rglob("last_checkpoint.pth")
+    )
+    for checkpoint in candidates:
         try:
             metadata = blaise_celeba.describe(checkpoint)
         except Exception:
@@ -262,6 +270,10 @@ def _celeba_models(experiments_dir: Path = CELEBA_EXPERIMENTS_DIR) -> List[Model
         conditional = metadata.get("model_type") == "cvae"
         beta = metadata.get("beta")
         run_name = checkpoint.parent.name
+        is_last = checkpoint.stem == "last_checkpoint"
+        if is_last:
+            # Sans suffixe, les deux etats d'un meme run entreraient en collision.
+            run_name = f"{run_name}_last"
 
         # Un run d'ablation est reconnu a son nom de dossier, produit par
         # run_ablation.py sous la forme `beta_<valeur>`. On ne peut pas se
@@ -272,6 +284,8 @@ def _celeba_models(experiments_dir: Path = CELEBA_EXPERIMENTS_DIR) -> List[Model
         is_ablation_run = run_name.startswith("beta_")
         kind = "CVAE" if conditional else "VAE"
         label = f"{kind} β = {beta:g}" if beta is not None else f"{kind} ({run_name})"
+        if is_last:
+            label += " · dernière epoch"
 
         entries.append(
             ModelEntry(

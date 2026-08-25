@@ -60,6 +60,29 @@ def as_data_uri(encoded: str) -> str:
     return DATA_URI_PREFIX + encoded
 
 
+def normalize_ablation(rows: List[dict]) -> List[dict]:
+    """Ramene les tableaux d'ablation a une seule forme.
+
+    Les sous-projets ne journalisent pas la meme chose : MNIST retient la
+    derniere epoch (`final_val_*`), CelebA la meilleure (`best_val_*`). Plutot
+    que d'apprendre les deux conventions au frontend, on les aplatit ici.
+    """
+    normalized = []
+    for row in rows:
+        normalized.append(
+            {
+                "beta": row.get("beta"),
+                "val_loss": row.get("final_val_loss", row.get("best_val_loss")),
+                "val_reconstruction": row.get(
+                    "final_val_reconstruction", row.get("best_val_reconstruction")
+                ),
+                "val_kl": row.get("final_val_kl", row.get("best_val_kl")),
+                "best_epoch": row.get("best_epoch"),
+            }
+        )
+    return normalized
+
+
 # --------------------------------------------------------------------- #
 # Schemas de requete
 # --------------------------------------------------------------------- #
@@ -268,22 +291,33 @@ def create_app(device: Optional[str] = None, warmup: bool = True) -> FastAPI:
 
     @app.get("/api/datasets", tags=["metadonnees"])
     def list_datasets():
-        datasets = catalog.available_datasets()
-        if not datasets:
+        """Datasets a proposer dans l'interface.
+
+        Un dataset est annonce des qu'il a quelque chose a montrer : des modeles
+        servables, ou a defaut des images reelles et des resultats d'evaluation.
+        Le masquer tant qu'aucun poids n'est arrive rendrait invisible le reste
+        du travail de son auteur — metriques, ablation, figures — alors que
+        l'API le sert deja. Le champ `model_count` dit a l'interface quels
+        ecrans elle peut reellement proposer.
+        """
+        payload = []
+        for dataset in catalog.datasets.values():
+            store = fixtures.get(dataset.dataset_id, dataset.fixture_name)
+            metadata = catalog.dataset_metadata(dataset)
+            metadata["fixtures_available"] = store.available
+            if metadata["model_count"] == 0 and not store.available:
+                continue
+            payload.append(metadata)
+
+        if not payload:
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "Aucun checkpoint trouve. Entrainer les modeles, deposer les checkpoints "
-                    "Fashion-MNIST et CelebA, puis lancer : python scripts/register_models.py"
+                    "Aucun dataset exploitable. Generer les fixtures avec "
+                    "'python scripts/build_demo_fixtures.py', puis enregistrer les modeles "
+                    "avec 'python scripts/register_models.py'."
                 ),
             )
-        payload = []
-        for dataset in datasets:
-            metadata = catalog.dataset_metadata(dataset)
-            metadata["fixtures_available"] = fixtures.get(
-                dataset.dataset_id, dataset.fixture_name
-            ).available
-            payload.append(metadata)
         return {"datasets": payload}
 
     @app.get("/api/models", tags=["metadonnees"])
@@ -292,9 +326,9 @@ def create_app(device: Optional[str] = None, warmup: bool = True) -> FastAPI:
             models = catalog.models(dataset)
         except KeyError as error:
             raise HTTPException(status_code=404, detail=str(error))
-        if not models:
-            raise HTTPException(status_code=503, detail="Aucun modele disponible pour ce dataset.")
-
+        # Liste vide plutot qu'une erreur : le dataset existe, ses poids ne sont
+        # simplement pas encore la. L'interface le signale et affiche ce qui
+        # reste consultable (metriques, images reelles).
         payload = []
         for entry in models:
             metadata = catalog.model_metadata(entry)
@@ -327,7 +361,9 @@ def create_app(device: Optional[str] = None, warmup: bool = True) -> FastAPI:
                 result["comparison"] = json.loads(comparison.read_text(encoding="utf-8"))
             ablation = ROOT_DIR / "reports" / "experiments" / "ablation" / "results.json"
             if ablation.exists():
-                result["ablation"] = json.loads(ablation.read_text(encoding="utf-8"))
+                result["ablation"] = normalize_ablation(
+                    json.loads(ablation.read_text(encoding="utf-8"))
+                )
 
         elif dataset == "fashion_mnist":
             # David produit ses resultats en CSV : on les convertit ici pour que
@@ -355,7 +391,9 @@ def create_app(device: Optional[str] = None, warmup: bool = True) -> FastAPI:
                 result["comparison"] = json.loads(comparison.read_text(encoding="utf-8"))
             ablation = CELEBA_RESULTS / "experiments" / "ablation" / "results.json"
             if ablation.exists():
-                result["ablation"] = json.loads(ablation.read_text(encoding="utf-8"))
+                result["ablation"] = normalize_ablation(
+                    json.loads(ablation.read_text(encoding="utf-8"))
+                )
         else:
             raise HTTPException(status_code=404, detail=f"Dataset inconnu : {dataset}")
 

@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import { getFixtures, getMetrics, reconstructImage } from '../api.js'
-import { DataTable, DigitImage, FixturePicker, Notice, formatNumber } from '../components.jsx'
+import {
+  DataTable,
+  DigitImage,
+  FixturePicker,
+  Notice,
+  NoWeightsNotice,
+  formatNumber,
+} from '../components.jsx'
 
 export default function CompareView({ dataset, models }) {
   const [fixtures, setFixtures] = useState(null)
@@ -44,6 +51,10 @@ export default function CompareView({ dataset, models }) {
       .catch((err) => setError(err.message))
   }, [index, vaeModel?.id, cvaeModel?.id])
 
+  // Les tableaux de metriques restent affiches meme sans poids : ils viennent
+  // des fichiers de resultats, pas des modeles.
+  const noWeights = models.length === 0
+
   const comparison = metrics?.comparison
   const evaluation = metrics?.evaluation
   const original = results.vae?.original || results.cvae?.original
@@ -60,7 +71,9 @@ export default function CompareView({ dataset, models }) {
 
         {error && <Notice kind="error">{error}</Notice>}
 
-        {fixtures && (
+        {noWeights && <NoWeightsNotice dataset={dataset} />}
+
+        {!noWeights && fixtures && (
           <div className="mb-5 flex flex-wrap items-end gap-5">
             <FixturePicker
               fixtures={fixtures}
@@ -72,7 +85,7 @@ export default function CompareView({ dataset, models }) {
           </div>
         )}
 
-        <div className="mt-5 flex flex-wrap gap-10">
+        <div className={`mt-5 flex flex-wrap gap-10 ${noWeights ? 'hidden' : ''}`}>
           <div className="w-32 text-center">
             <DigitImage src={original} alt="Original" />
             <div className="caption">image réelle</div>

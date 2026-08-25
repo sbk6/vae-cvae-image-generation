@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react'
 import { getFixtures, interpolateLatent } from '../api.js'
-import { DigitImage, FixturePicker, ModelSelect, Notice } from '../components.jsx'
+import {
+  DigitImage,
+  FixturePicker,
+  ModelSelect,
+  Notice,
+  NoWeightsNotice,
+} from '../components.jsx'
 
 const STEPS = 16
 
@@ -48,6 +54,23 @@ export default function InterpolateView({ dataset, models }) {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false))
   }, [modelId, sourceIndex, targetIndex])
+
+  // Tous les hooks ci-dessus sont appeles inconditionnellement : React
+  // interdit qu'un rendu en execute un nombre different du precedent, et
+  // `models` passe de vide a rempli des que l'API repond.
+  // Sans poids enregistres, cet ecran n'a rien a produire. On l'annonce
+  // au lieu d'afficher des controles inertes.
+  if (models.length === 0) {
+    return (
+      <div className="card">
+        <h2 className="mb-1 text-[17px] font-semibold">Interpolation dans l'espace latent</h2>
+        <p className="mb-5 text-[13.5px] text-dim">
+          Cet écran génère des images en direct : il lui faut au moins un modèle chargé.
+        </p>
+        <NoWeightsNotice dataset={dataset} />
+      </div>
+    )
+  }
 
   const currentImage = result?.images?.[position]
   const currentAlpha = result?.alphas?.[position]
